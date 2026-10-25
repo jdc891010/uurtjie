@@ -9,7 +9,7 @@ That means time at the keyboard in the client's project folders (terminals, Herd
 client's browser windows, and in calls. It runs in the background, shows today's hours and earnings in your bar,
 and turns the month into a timesheet and an invoice.
 
-*uurtjie* is Afrikaans for "little hour".
+*uurtjie* is Afrikaans for "little hour". Why it exists, in plain words: [The little hour](docs/articles/the-little-hour.md).
 
 <p align="center"><img src="docs/images/widget.svg" alt="The uurtjie bar item showing today's hours, the tracked project and this month's earnings, and the panel below it with today, week and month totals, earnings, time per project, an hour-by-hour chart, what is being tracked now, and buttons" width="540"></p>
 
