@@ -403,7 +403,7 @@ class Daemon:
                 ctx = await self.resolve(win)
 
         if ctx is None:
-            self.current = None
+            self._close_slot("current", now)
         else:
             self.enrich(ctx)
             self._record("current", ctx, now)
@@ -415,19 +415,32 @@ class Daemon:
         with db.transaction(self.con):
             self._record_locked(slot, ctx, now, gap, start)
 
+    def _span_matches(self, current: dict) -> bool:
+        row = self.con.execute("SELECT * FROM spans WHERE id=?", (current["id"],)).fetchone()
+        return bool(row and (row["project"], row["source"], row["ctx_key"]) == current["key"]
+                    and row["start_ts"] == current["start"] and row["end_ts"] == current["last"]
+                    and row["billable"] and row["note"] is None
+                    and json.loads(row["detail"] or "{}") == current["detail"])
+
+    def _close_slot(self, slot: str, now: int):
+        current = getattr(self, slot)
+        if current is None:
+            return
+        with db.transaction(self.con):
+            if self._span_matches(current) and 0 <= now - current["last"] <= self.cfg.merge_gap:
+                db.extend_span(self.con, current["id"], now)
+            setattr(self, slot, None)
+
     def _record_locked(self, slot: str, ctx: Context, now: int, gap: int | None, start: int | None):
         """Extend the open entry in `slot` if it is the same task, else open a new one (and chunk long ones)."""
         gap = self.cfg.merge_gap if gap is None else gap
         key = (ctx.project, ctx.source, ctx.key)
         c = getattr(self, slot)
-        if c:
-            row = self.con.execute("SELECT * FROM spans WHERE id=?", (c["id"],)).fetchone()
-            if (not row or (row["project"], row["source"], row["ctx_key"]) != c["key"]
-                    or row["start_ts"] != c["start"] or row["end_ts"] != c["last"]
-                    or not row["billable"] or row["note"] is not None
-                    or json.loads(row["detail"] or "{}") != c["detail"]):
-                c = None
-                start = None          # do not restore time that the user removed or edited
+        if c and not self._span_matches(c):
+            c = None
+            start = None          # do not restore time that the user removed or edited
+        if c and c["key"] != key and 0 <= now - c["last"] <= gap:
+            db.extend_span(self.con, c["id"], now)
         if c and c["key"] == key and now - c["last"] <= gap:
             self.merge_detail(c, ctx.detail)
             db.extend_span(self.con, c["id"], now, c["detail"])
@@ -482,6 +495,7 @@ class Daemon:
     async def meeting_tick(self, now: int):
         """Calls count while the mic is open, even with no keyboard or mouse input (idle doesn't apply)."""
         if not (self.audio and self.cfg.meeting_detect):
+            self._close_slot("meeting_current", now)
             self.meeting_seen = self.meeting_current = None
             return
         try:
@@ -491,22 +505,30 @@ class Daemon:
             ctx = None
         m, cfg = self.meeting_seen, self.cfg
         if ctx is None:
+            self._close_slot("meeting_current", now)
+            if m:
+                m["absent"] = True
             if m and (not m["confirmed"] or now - m["last_seen"] > cfg.meeting_grace_seconds):
                 log.info("call ended (%s)", m["ctx"].project)
                 self.meeting_seen = self.meeting_current = None
             return
         key = (ctx.project, ctx.key)
-        if m is None or m["key"] != key:
-            self.meeting_current = None
+        if (m is None or m["key"] != key
+                or (m.get("absent") and now - m["last_seen"] > cfg.meeting_grace_seconds)):
+            self._close_slot("meeting_current", now)
             m = self.meeting_seen = {"key": key, "ctx": ctx, "since": now, "last_seen": now, "confirmed": False}
         m["ctx"], m["last_seen"] = ctx, now
+        m["absent"] = False
+        newly_confirmed = False
         if not m["confirmed"] and now - m["since"] >= cfg.meeting_min_seconds:
             m["confirmed"] = True
+            newly_confirmed = True
             log.info("call started: %s via %s", ctx.project, ctx.detail.get("app"))
         if m["confirmed"]:
-            # first entry is back-dated to when the mic opened, so the opening seconds count too
+            # Only initial confirmation is backdated. Mute grace retains call identity,
+            # but no new evidence is recorded while the microphone is absent.
             self._record("meeting_current", ctx, now, gap=max(cfg.merge_gap, cfg.meeting_grace_seconds),
-                         start=m["since"] if self.meeting_current is None else None)
+                         start=m["since"] if newly_confirmed else None)
 
     def meeting_info(self, now: int) -> dict | None:
         m = self.meeting_seen

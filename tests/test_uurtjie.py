@@ -533,13 +533,14 @@ class CallTests(unittest.TestCase):
         self.audio.streams = [CHROME_STREAM]                 # unmuted: same call
         self.tick(t + 130)
         c = self.calls()
-        self.assertEqual(len(c), 1)
-        self.assertEqual((c[0]["project"], c[0]["start_ts"], c[0]["end_ts"]), ("acme", t, t + 130))
+        self.assertEqual(len(c), 2)
+        self.assertEqual((c[0]["project"], c[0]["start_ts"], c[0]["end_ts"]), ("acme", t, t + 65))
+        self.assertEqual((c[1]["start_ts"], c[1]["end_ts"]), (t + 130, t + 130))
         self.assertEqual(json.loads(c[0]["detail"])["app"], "Google Chrome")
         self.audio.streams = []                              # hang up: over after the grace period
         for i in range(135, 300, 5):
             self.tick(t + i)
-        self.assertEqual(self.calls()[0]["end_ts"], t + 130)
+        self.assertEqual(self.calls()[-1]["end_ts"], t + 135)
         self.assertIsNone(json.loads((Path(TMP) / "uurtjie" / "state.json").read_text())["meeting"])
 
     def test_brief_mic_use_is_not_a_call(self):

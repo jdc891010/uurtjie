@@ -1,5 +1,6 @@
 """Strict human-time accounting and upgrade compatibility."""
 import io
+import asyncio
 import json
 import random
 import tempfile
@@ -8,7 +9,7 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from uurtjie import cli, config, config_edit, daemon, db, invoice, report, sessions
 
@@ -196,3 +197,75 @@ class HumanTimeTests(unittest.TestCase):
         self.assertEqual(earned, {"ZAR": snap["subtotal"]})
         self.assertAlmostEqual(snap["hours"] * 3600, 122)
         self.assertIn("Human time, no time rounding", invoice.render_html(snap))
+
+    def tracker(self):
+        hypr = Mock(active_window=AsyncMock(return_value={"address": "1"}))
+        d = daemon.Daemon(self.cfg, self.con, hypr, None)
+        d.write_state = Mock()
+        d.enrich = Mock()
+        return d
+
+    def tick(self, d, second, context):
+        with patch.object(daemon.time, "time", return_value=self.start + second), \
+                patch.object(d, "resolve", new=AsyncMock(return_value=context)):
+            asyncio.run(d.tick())
+
+    def test_context_switch_and_untracked_window_share_exact_sample_boundaries(self):
+        d = self.tracker()
+        a, b = daemon.Context("acme", "window", "a"), daemon.Context("other", "window", "b")
+        for second, ctx in [(0, a), (5, a), (10, b), (15, b), (20, None), (25, None), (30, a), (35, a)]:
+            self.tick(d, second, ctx)
+        rows = self.con.execute("SELECT * FROM spans ORDER BY start_ts").fetchall()
+        self.assertEqual([(r["project"], r["start_ts"]-self.start, r["end_ts"]-self.start) for r in rows],
+                         [("acme", 0, 10), ("other", 10, 20), ("acme", 30, 35)])
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 40)
+        self.assertEqual(sum(s["seconds"] for s in result), 25)
+
+    def test_chunk_rollover_then_idle_never_retains_idle_lookback(self):
+        d = self.tracker()
+        ctx = daemon.Context("acme", "window", "a")
+        self.cfg.chunk_minutes = 1
+        self.cfg.sleep_minutes = 0.5
+        for second in range(0, 81, 5):
+            self.tick(d, second, ctx)
+        rows = self.con.execute("SELECT start_ts,end_ts FROM spans ORDER BY id").fetchall()
+        self.assertEqual(rows[0][1], rows[1][0])
+        d.on_idle(self.start + 85)
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 100)
+        self.assertEqual(sum(s["seconds"] for s in result), 55)
+        self.tick(d, 95, ctx)
+        self.assertEqual(sum(r[0] for r in self.con.execute("SELECT end_ts-start_ts FROM spans")), 55)
+
+    def test_meeting_while_idle_and_mute_gap_only_count_observed_capture(self):
+        d = self.tracker()
+        d.audio = object()
+        ctx = daemon.Context("acme", "meeting", "call")
+        d.detect_meeting = AsyncMock(return_value=ctx)
+        d.on_idle(self.start)
+        for second in range(0, 61, 5):
+            with patch.object(daemon.time, "time", return_value=self.start + second):
+                asyncio.run(d.tick())
+        d.detect_meeting.return_value = None
+        for second in [65, 70, 90, 120]:
+            with patch.object(daemon.time, "time", return_value=self.start + second):
+                asyncio.run(d.tick())
+        d.detect_meeting.return_value = ctx
+        for second in [125, 130, 135]:
+            with patch.object(daemon.time, "time", return_value=self.start + second):
+                asyncio.run(d.tick())
+        d.detect_meeting.return_value = None
+        with patch.object(daemon.time, "time", return_value=self.start + 140):
+            asyncio.run(d.tick())
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 200)
+        self.assertEqual(sum(s["seconds"] for s in result), 80)
+        self.assertEqual([(a-self.start,b-self.start) for s in result for a,b in s["intervals"]], [(0,65),(125,140)])
+        self.assertTrue(d.idle)
+
+    def test_zero_meeting_grace_still_confirms_continuous_capture(self):
+        d = self.tracker()
+        d.audio = object()
+        self.cfg.meeting_grace_seconds = 0
+        d.detect_meeting = AsyncMock(return_value=daemon.Context("acme", "meeting", "call"))
+        for second in range(0, 61, 5):
+            asyncio.run(d.meeting_tick(self.start + second))
+        self.assertEqual(sum(r[0] for r in self.con.execute("SELECT end_ts-start_ts FROM spans")), 60)
