@@ -1023,7 +1023,7 @@ def main(argv=None):
     s = sub.add_parser("config", help="show or change settings (rate, invoice details, ...) without hand-editing")
     csub = s.add_subparsers(dest="config_cmd", required=True)
     c = csub.add_parser("show", help="effective settings and what's still missing for invoicing")
-    c = csub.add_parser("set", help="set one value, e.g.  config set rate 650   or   config set invoice.from.bank 'Bank: X' 'Acc: 1'")
+    c = csub.add_parser("set", help="set one value, e.g.  config set rate 950   or   config set invoice.from.bank 'Bank: X' 'Acc: 1'")
     c.add_argument("key", help="rate, currency, client, client_address, invoice.vat_rate, invoice.from.name, ...")
     c.add_argument("value", nargs="+", help="a value (lists like address/bank take one argument per line)")
     c.add_argument("--project", help="for per-project settings (default: your default project)")

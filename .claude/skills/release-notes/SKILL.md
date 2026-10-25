@@ -64,7 +64,7 @@ Rules (`changelog.py add` enforces the ones marked ✱):
 - One bullet per user-visible change. Merge commits that belong to one change. Leave out refactors, test-only
   and review-fixup commits unless they change behaviour.
 - Say what the user can now do or will notice, in plain words, present tense. Name commands, settings and keys
-  in backticks exactly as typed (`uurtjie config set rate 650`, `show_money_in_bar`).
+  in backticks exactly as typed (`uurtjie config set rate 950`, `show_money_in_bar`).
 - Anything the user must do after upgrading goes in the bullet as **Action:**.
 - Security fixes go under `### Security`: state the impact and who is affected, without a working exploit.
 - `### Packaging`: installer, release, CI and dependency changes that matter to someone installing.

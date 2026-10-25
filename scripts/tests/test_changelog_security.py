@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))       # repo root: import scripts.changelog
+sys.path.insert(0, str(Path(__file__).resolve().parent))           # sibling test module, however the suite is run
 from scripts import changelog as cl  # noqa: E402
 from test_changelog import BODY, GOOD, make_repo, run  # noqa: E402
 
@@ -124,7 +125,7 @@ class SecretDetectionTests(unittest.TestCase):
             cl.add_section(GOOD, "0.5.0", body, "2026-11-01")
 
     def test_check_flags_secret_already_in_changelog(self):
-        text = GOOD.replace("- Renamed from tally.", "- Renamed from tally, see /home/alice/notes.")
+        text = GOOD.replace("- Renamed from tally.", "- Renamed from tally, see /home/bob/notes.")
         self.assertTrue(any("absolute home path" in e for e in cl.check(text)))
 
     def test_cli_add_refuses_secret_and_leaves_file(self):
@@ -337,6 +338,31 @@ class TarballContentTests(unittest.TestCase):
             hits = [n for n in cl.find_secrets(text) if n not in ("password assignment", "absolute home path")]
             with self.subTest(file=f):
                 self.assertEqual(hits, [])
+
+    # Placeholders only: a real address or user name in a public repo identifies the author or a client.
+    ALLOWED_EMAIL = re.compile(r"@(example\.(com|org|net)|users\.noreply\.github\.com|anthropic\.com)$")
+    ALLOWED_HOME = {"alice", "bob", "<name>", "<user>", "you", "user"}
+
+    def tracked_text_files(self):
+        files = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split()
+        for f in files:
+            if (REPO / f).is_file() and not f.endswith((".png", ".db")):
+                try:
+                    yield f, (REPO / f).read_text()
+                except UnicodeDecodeError:
+                    continue
+
+    def test_only_placeholder_email_addresses(self):
+        for f, text in self.tracked_text_files():
+            for addr in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", text):
+                with self.subTest(file=f, addr=addr):
+                    self.assertRegex(addr, self.ALLOWED_EMAIL, "use a placeholder like jane@example.com")
+
+    def test_only_placeholder_home_directories(self):
+        for f, text in self.tracked_text_files():
+            for user in re.findall(r"/(?:home|Users)/([A-Za-z0-9._<>-]+)", text):
+                with self.subTest(file=f, user=user):
+                    self.assertIn(user, self.ALLOWED_HOME, "use ~/… or a placeholder user like /home/alice")
 
 
 if __name__ == "__main__":

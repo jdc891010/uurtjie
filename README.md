@@ -163,7 +163,7 @@ Electron app), not only browsers.
 ### The bar widget
 
 The bar shows today's hours, the project being tracked, and money earned so far this month, for example
-`󰥔 4h24 acme · R117,135`. It is dimmed while you're idle.
+`󰥔 4h24 acme · R55,620`. It is dimmed while you're idle.
 
 | Click | Does |
 |---|---|
