@@ -30,7 +30,9 @@ jobs:
           python-version: "3.11"      # the project's minimum
 
       - name: Test
-        run: python3 -m unittest discover -s tests -v
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 -m unittest discover -s scripts/tests -v
 
       - name: Build tarball
         id: build

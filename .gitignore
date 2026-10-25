@@ -5,3 +5,6 @@ __pycache__/
 *.db-shm
 .venv/
 dist/
+mutants/
+.pytest_cache/
+.mutmut-cache

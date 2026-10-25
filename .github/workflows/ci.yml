@@ -14,7 +14,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Test
+      - name: App tests
         run: python3 -m unittest discover -s tests -v
+      - name: Release tooling tests (unit + security)
+        run: python3 -m unittest discover -s scripts/tests -v
       - name: Release checks
         run: scripts/build-release.sh --check
+
+  # Mutation testing of the release tooling (scripts/changelog.py, config in setup.cfg). The tests must
+  # kill every mutant except the known equivalent ones (MAX_SURVIVORS, listed in setup.cfg).
+  mutation:
+    runs-on: ubuntu-latest
+    env:
+      MAX_SURVIVORS: 11
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mutmut
+        run: python3 -m pip install mutmut==3.8.0 pytest
+      - name: Run mutmut
+        run: mutmut run || true
+      - name: Check survivors
+        run: |
+          mutmut results --all true | awk -F': ' '{print $2}' | sort | uniq -c
+          survived=$(mutmut results | grep -c ': survived' || true)
+          not_checked=$(mutmut results | grep -c ': not checked' || true)
+          echo "survived=$survived (allowed $MAX_SURVIVORS), not checked=$not_checked"
+          if [ "$not_checked" -gt 0 ] || [ "$survived" -gt "$MAX_SURVIVORS" ]; then
+            mutmut results | grep -v ': killed'
+            echo "::error::New surviving mutants: add tests that kill them (mutmut show <name>), or mark a proven-equivalent one in setup.cfg."
+            exit 1
+          fi

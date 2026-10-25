@@ -7,13 +7,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-v=$(python3 -c 'import uurtjie; print(uurtjie.__version__)')
-mv=$(python3 -c 'import json; print(json.load(open("omarchy-plugin/jd.uurtjie/manifest.json"))["version"])')
-if [[ "$v" != "$mv" ]]; then
-  echo "version mismatch: uurtjie/__init__.py says $v, omarchy-plugin/jd.uurtjie/manifest.json says $mv" >&2
-  exit 1
-fi
-scripts/release-notes.sh "$v" >/dev/null || { echo "add a '## [$v] - YYYY-MM-DD' section to CHANGELOG.md" >&2; exit 1; }
+v=$(python3 scripts/changelog.py version)          # fails if __init__.py and manifest.json disagree
+python3 scripts/changelog.py check --version "$v" >/dev/null   # section exists, newest first, well formed, no secrets
 
 if [[ "${1:-}" != "--check" ]]; then
   [[ -z "$(git status --porcelain)" ]] || echo "warning: uncommitted changes are not in the tarball (built from HEAD)" >&2

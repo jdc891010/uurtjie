@@ -304,12 +304,21 @@ tests run, `scripts/build-release.sh` builds `uurtjie-<version>.tar.gz` (plus `u
 stable "latest" link and `SHA256SUMS`), and the matching `CHANGELOG.md` section becomes the release
 notes. Only the newest 3 releases stay hosted; older ones are deleted, their git tags kept.
 
-1. Bump the version in `uurtjie/__init__.py` **and** `omarchy-plugin/jd.uurtjie/manifest.json`.
-2. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`.
-3. `scripts/build-release.sh --check` (CI runs the same check on every PR).
-4. Open a PR from `main` into `release` and merge it.
+With Claude Code, ask it to *prepare a release*: the project skill `.claude/skills/release-notes` reads
+the commits since the last tag, proposes the version, writes the changelog section and validates it.
+By hand, the same steps with `scripts/changelog.py`:
+
+1. `python3 scripts/changelog.py commits`: what changed since the last release (JSON).
+2. `python3 scripts/changelog.py bump patch|minor|major`: updates `uurtjie/__init__.py` **and** the widget manifest.
+3. `python3 scripts/changelog.py add X.Y.Z --notes-file notes.md`: inserts the dated section (refuses
+   malformed notes, secrets and absolute home paths).
+4. `scripts/build-release.sh --check` (CI runs the same check on every PR).
+5. Open a PR from `main` into `release` and merge it.
 
 Re-merging without a version bump fails instead of overwriting a published release.
+
+The release tooling has its own tests: `python3 -m unittest discover -s scripts/tests` (unit + security),
+and mutation testing with `mutmut run` (config and known-equivalent mutants in `setup.cfg`; CI fails on new survivors).
 
 ## Troubleshooting
 
