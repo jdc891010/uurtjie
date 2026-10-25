@@ -286,7 +286,12 @@ class WorkflowHardeningTests(unittest.TestCase):
 
     def test_release_permissions_minimal(self):
         text = self.workflows()["release.yml"]
-        self.assertRegex(text, r"(?m)^permissions:\s*\n\s+contents: write\s*$")
+        self.assertRegex(text, r"(?m)^permissions:\s*\n\s+contents: read\s*$")
+        build, publish = text.split("  publish:", 1)
+        self.assertNotIn("contents: write", build)
+        self.assertRegex(publish, r"permissions:\s*\n\s+contents: write")
+        self.assertNotIn("actions/checkout@", publish)
+        self.assertNotIn("scripts/", publish)
         self.assertNotRegex(text, r"write-all|id-token|packages: write|actions: write")
 
     def test_ci_has_no_write_permissions(self):
@@ -301,13 +306,14 @@ class WorkflowHardeningTests(unittest.TestCase):
         uses = [l.strip() for l in text.splitlines() if "steps.build.outputs.version" in l]
         self.assertTrue(uses)
         for line in uses:
-            self.assertEqual(line, "VERSION: ${{ steps.build.outputs.version }}")
+            self.assertIn(line, ("VERSION: ${{ steps.build.outputs.version }}",
+                                 "version: ${{ steps.build.outputs.version }}"))
 
-    def test_actions_pinned_to_versions(self):
+    def test_actions_pinned_to_immutable_commits(self):
         for name, text in self.workflows().items():
             for uses in re.findall(r"uses:\s*(\S+)", text):
                 with self.subTest(workflow=name, uses=uses):
-                    self.assertRegex(uses, r"@(v\d+(\.\d+)*|[0-9a-f]{40})$")
+                    self.assertRegex(uses, r"@[0-9a-f]{40}$")
 
 
 class TarballContentTests(unittest.TestCase):

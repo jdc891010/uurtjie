@@ -17,9 +17,10 @@ import subprocess
 import tempfile
 import time
 from datetime import date, timedelta
+from contextlib import closing
 from pathlib import Path
 
-from . import db, report
+from . import db, money, report, storage
 from .config import Config
 
 
@@ -33,7 +34,7 @@ def fmt_money(cur: str, x: float) -> str:
 
 def fmt_hours(h: float) -> str:
     """Decimal hours without a misleading trailing zero: 7.3 (not 7.30, which reads like 7 h 30), 6.25."""
-    t = f"{h:,.2f}".rstrip("0")
+    t = f"{h:,.6f}".rstrip("0")
     return t + "0" if t.endswith(".") else t
 
 
@@ -168,15 +169,26 @@ def create(con, cfg: Config, project_id: str, d_from: date, d_to: date, *, today
             raise InvoiceError(f"{other['period_from']}..{other['period_to']} overlaps invoice {other['number']}; "
                                "void it first or choose another range (--force to override)")
 
-    rep = report.range_report(con, cfg, d_from, d_to, project_id, with_git=with_git)
+    bounds = period_bounds(d_from, d_to)
+    # A coherent SQLite snapshot avoids mixing a timer read with spans from another
+    # instant. Enrichment runs on the copy without holding up daemon/CLI writes.
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as view:
+        con.backup(view)
+        view.row_factory = sqlite3.Row
+        before = db.accounting_state(view, *bounds)
+        cached = {r["key"] for r in view.execute("SELECT key FROM summaries")}
+        rep = report.range_report(view, cfg, d_from, d_to, project_id, with_git=with_git)
+        for row in view.execute("SELECT * FROM summaries"):
+            if row["key"] not in cached:
+                con.execute("INSERT OR IGNORE INTO summaries(key, summary, created_at) VALUES (?,?,?)", tuple(row))
     if rep["total_hours"] <= 0:
         raise InvoiceError("no billable time in that period")
     iv = cfg.invoice
     vat = iv.vat_rate if vat_rate is None else vat_rate
     terms = iv.payment_terms_days if due_days is None else due_days
-    subtotal = round(rep["total_amount"], 2)
-    vat_amount = round(subtotal * vat / 100, 2)
-    total = round(subtotal + vat_amount, 2)
+    subtotal = money.cents(rep["total_amount"])
+    vat_amount = money.cents(money.decimal(subtotal) * money.decimal(vat) / 100)
+    total = money.cents(money.decimal(subtotal) + money.decimal(vat_amount))
     issue = today
     due = issue + timedelta(days=terms)
     month_label = rep["period"] if len(rep["period"]) == 7 else f"{d_from}..{d_to}"
@@ -204,8 +216,14 @@ def create(con, cfg: Config, project_id: str, d_from: date, d_to: date, *, today
             pass
 
     year = issue.year
-    for attempt in range(5):                   # retry if another process took the number first
-        con.execute("BEGIN IMMEDIATE")
+    with db.transaction(con):
+        # Git and summary commands ran without a write lock. The accounting inputs must
+        # still agree before the snapshot is issued; otherwise ask for a fresh report.
+        if before != db.accounting_state(con, *bounds):
+            raise InvoiceError("time entries changed while preparing the invoice; retry the command")
+        for other in active_invoices(con, project_id):
+            if _day(other["period_from"]) <= d_to and _day(other["period_to"]) >= d_from and not force:
+                raise InvoiceError(f"that period overlaps invoice {other['number']}; void it first")
         try:
             seq = con.execute("SELECT COALESCE(MAX(seq),0)+1 FROM invoices WHERE substr(issue_date,1,4)=?",
                               (str(year),)).fetchone()[0]
@@ -218,15 +236,8 @@ def create(con, cfg: Config, project_id: str, d_from: date, d_to: date, *, today
                 (project_id, month_label, rep["total_hours"], subtotal, proj.currency, None, int(time.time()),
                  number, seq, snap["period_from"], snap["period_to"], "issued", snap["issue_date"],
                  snap["due_date"], vat, vat_amount, total, json.dumps(snap, ensure_ascii=False)))
-            con.execute("COMMIT")
-            break
-        except sqlite3.IntegrityError:
-            con.execute("ROLLBACK")
-            if attempt == 4:
-                raise InvoiceError("couldn't allocate an invoice number (number_format may not be unique)")
-        except Exception:
-            con.execute("ROLLBACK")
-            raise
+        except sqlite3.IntegrityError as exc:
+            raise InvoiceError("couldn't allocate an invoice number (number_format may not be unique)") from exc
     return snap
 
 
@@ -300,8 +311,15 @@ def unbilled(con, cfg: Config, today: date | None = None, project: str | None = 
         while cur <= last:
             nxt = date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1)
             m_end = nxt - timedelta(days=1)
-            if not any(a <= cur and b >= m_end for a, b in invs):
-                rep = report.range_report(con, cfg, cur, m_end, p.id, with_git=False, period=cur.strftime("%Y-%m"))
+            covered = set()
+            for a, b in invs:
+                day = max(a, cur)
+                while day <= min(b, m_end):
+                    covered.add(day)
+                    day += timedelta(days=1)
+            if len(covered) < (m_end - cur).days + 1:
+                rep = report.range_report(con, cfg, cur, m_end, p.id, with_git=False,
+                                          period=cur.strftime("%Y-%m"), excluded_days=covered)
                 if rep["total_hours"] > 0:
                     out.append({"project": p.id, "month": rep["period"], "hours": rep["total_hours"],
                                 "amount": rep["total_amount"], "currency": rep["currency"],
@@ -439,19 +457,24 @@ def html_to_pdf(html_path: Path, pdf_path: Path) -> bool:
         cmd = [exe, "--headless=new", "--disable-gpu", f"--user-data-dir={tmp}", "--no-pdf-header-footer",
                f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()]
         try:
-            subprocess.run(cmd, capture_output=True, timeout=90)
+            subprocess.run(cmd, capture_output=True, timeout=90, umask=0o077)
         except (OSError, subprocess.TimeoutExpired):
             return False
     return pdf_path.exists() and pdf_path.stat().st_size > 0
 
 
 def write_files(snap: dict, out_dir: Path, pdf: bool = False, detail: str = "days") -> tuple[Path, Path | None]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     base = snap["number"].replace("/", "-")
     html_path = out_dir / f"{base}.html"
-    html_path.write_text(render_html(snap, detail), encoding="utf-8")
+    storage.atomic_write(html_path, render_html(snap, detail))
     pdf_path = None
     if pdf:
         target = out_dir / f"{base}.pdf"
-        pdf_path = target if html_to_pdf(html_path, target) else None
+        with tempfile.TemporaryDirectory(prefix=".uurtjie-render-", dir=out_dir) as tmp:
+            fresh = Path(tmp) / "invoice.pdf"
+            if html_to_pdf(html_path, fresh):
+                storage.private_file(fresh)
+                fresh.replace(target)
+                pdf_path = target
     return html_path, pdf_path

@@ -9,7 +9,10 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("UURTJIE_CONFIG", "~/.config/uurtjie/config.toml")).expanduser()
 DATA_DIR = Path(os.environ.get("UURTJIE_DATA", "~/.local/share/uurtjie")).expanduser()
-RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "uurtjie"
+_runtime_root = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+if not os.environ.get("XDG_RUNTIME_DIR") and not _runtime_root.exists():
+    _runtime_root = DATA_DIR / "run"
+RUNTIME_DIR = _runtime_root / "uurtjie"
 
 DEFAULT_TERMINALS = [
     "Alacritty", "alacritty",

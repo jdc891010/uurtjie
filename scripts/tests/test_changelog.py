@@ -41,6 +41,7 @@ def make_repo(tmp: Path, version: str = "0.4.1", changelog: str = GOOD) -> Path:
     (tmp / "uurtjie/__init__.py").write_text(f'"""uurtjie."""\n__version__ = "{version}"\n')
     (tmp / "omarchy-plugin/jd.uurtjie").mkdir(parents=True)
     (tmp / cl.MANIFEST).write_text(json.dumps({"id": "jd.uurtjie", "version": version}, indent=2) + "\n")
+    (tmp / cl.PANEL).write_text(f'readonly property string widgetVersion: "{version}"\n')
     (tmp / cl.CHANGELOG).write_text(changelog)
     return tmp
 

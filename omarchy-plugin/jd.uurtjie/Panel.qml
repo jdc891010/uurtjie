@@ -37,6 +37,7 @@ Panel {
     property var minutes: []
     property int nowHour: -1
     property int hovered: -1
+    readonly property real maximumMinutes: Math.max.apply(Math, [60].concat(minutes))
 
     readonly property var span: {
       return [0, 23]   // full day: long days are common
@@ -55,10 +56,10 @@ Panel {
 
     // y axis: 60 / 30 / 0 minutes, with a faint gridline each
     Repeater {
-      model: [60, 30, 0]
+      model: [chart.maximumMinutes, chart.maximumMinutes / 2, 0]
       delegate: Item {
         width: chart.width
-        y: chart.plotHeight * (1 - modelData / 60) - lab.implicitHeight / 2
+        y: chart.plotHeight * (1 - modelData / chart.maximumMinutes) - lab.implicitHeight / 2
         Text {
           id: lab
           width: chart.axisWidth - Style.space(4)
@@ -106,7 +107,7 @@ Panel {
           Rectangle {
             x: parent.gap
             width: parent.width - parent.gap * 2
-            height: parent.mins > 0 ? Math.max(2, parent.height * Math.min(60, parent.mins) / 60) : 0
+            height: parent.mins > 0 ? Math.max(2, parent.height * parent.mins / chart.maximumMinutes) : 0
             anchors.bottom: parent.bottom
             color: root.barForeground
             opacity: parent.hour === chart.hovered ? 1.0 : 0.8
@@ -204,7 +205,7 @@ Panel {
           text: chart.hovered >= 0
             ? chart.pad(chart.hovered) + ":00–" + chart.pad(chart.hovered + 1) + ":00   "
               + Math.round(chart.minutesAt(chart.hovered)) + " min"
-            : "Today by hour · minutes worked"
+            : "Today by hour · minutes worked" + (chart.maximumMinutes > 60 ? " (repeated/overlapping hours combined)" : "")
           opacity: chart.hovered >= 0 ? 1.0 : 0.6
           font.pixelSize: Style.font.bodySmall
         }

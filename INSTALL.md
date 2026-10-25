@@ -82,33 +82,23 @@ What it does (re-running it upgrades in place, and it never overwrites an existi
 If the installer printed a `require("hypr.uurtjie")` or `source = …` line, **ask the user** whether to
 add it to their Hyprland bindings (SUPER+ALT+T/U/Z must not clash with their own binds).
 
-## 4. Run the setup wizard
+## 4. Configure your projects and invoice details
 
 ```bash
-uurtjie setup
+$EDITOR ~/.config/uurtjie/config.toml
+uurtjie reload
+uurtjie config show
+uurtjie config invoice
 ```
 
-The wizard is interactive. **Agents: don't script the answers.** Hand it to the user (in Claude Code,
-ask them to type `! uurtjie setup`). It walks through:
+Edit each `[[projects]]` entry: its ID, client, hourly rate, currency, folders in `paths`, and any
+`[[projects.windows]]` rules. Remove the example projects you do not need. `config.example.toml`
+and the README explain the settings. Use `hyprctl activewindow` to inspect a window's class and title.
 
-1. **How tracking works**: idle cut-off, folders vs windows, calls, sessions and rounding.
-2. **Your timezone / UTC offset**: day boundaries for daily hours and earnings.
-3. **Projects**: name, client, hourly **rate** and currency.
-4. **Folders to watch**: terminal, Claude Code, Codex and Herdr work under these paths counts for the project.
-   It suggests folders you've recently used.
-5. **Browser windows**: which Chrome or other browser profiles or windows count, matched by window class or title.
-   It lists the windows open right now so you can pick.
-6. **Review**: shows the config it will write, saves it, reloads the tracker and runs a live check.
-
-> **If `uurtjie setup` reports "invalid choice"**, your version predates the wizard. Configure by hand:
-> ```bash
-> $EDITOR ~/.config/uurtjie/config.toml     # projects, paths, [[projects.windows]], rate
-> uurtjie reload
-> uurtjie config show                        # effective settings + what invoicing still needs
-> uurtjie config invoice                     # guided prompts for your and the client's details
-> ```
-> `config.example.toml` and the README explain every setting. Use `hyprctl activewindow` to see a
-> window's class and title for `[[projects.windows]]`.
+`config invoice` prompts for your seller/bank details and the client's billing address.
+**Agents: ask the user for their projects and billing details; do not invent them or script the interactive prompts.**
+Use `config set` for values the user has supplied. Day boundaries use the system timezone; there is no
+application timezone setting or `uurtjie setup` command yet.
 
 ## 5. Verify
 
@@ -123,6 +113,7 @@ journalctl --user -u uurtjie -n 50     # no tracebacks
 ## Upgrade
 
 Download a newer release (step 2) and run its `./install.sh`. Your config, database and backups stay.
+The installer stages the new package, stops the active daemon, replaces the code, and restarts the service.
 Then check with `uurtjie status`; the version is in `uurtjie status --json`.
 
 ## Uninstall

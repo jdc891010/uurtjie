@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs uurtjie for the current user on Omarchy (Hyprland). Re-run to upgrade.
 set -euo pipefail
+umask 077
 here="$(cd "$(dirname "$0")" && pwd)"
 app="$HOME/.local/share/uurtjie/app"
 
@@ -54,8 +55,16 @@ fi
 
 echo "→ app → $app"
 mkdir -p "$app" "$HOME/.local/bin" "$HOME/.config/uurtjie"
+chmod 700 "$HOME/.local/share/uurtjie" "$HOME/.config/uurtjie"
+stage=$(mktemp -d "$app/.install.XXXXXX")
+trap 'rm -rf -- "$stage"' EXIT
+cp -r "$here/uurtjie" "$stage/"
+# Finish staging before stopping the daemon, so failed copies leave it running.
+if systemctl --user is-active --quiet uurtjie.service; then
+  systemctl --user stop uurtjie.service
+fi
 rm -rf "$app/uurtjie"
-cp -r "$here/uurtjie" "$app/"
+mv "$stage/uurtjie" "$app/uurtjie"
 install -m 755 "$here/bin/uurtjie" "$HOME/.local/bin/uurtjie"
 install -m 755 "$here/bin/uurtjie-quick" "$HOME/.local/bin/uurtjie-quick"
 install -m 755 "$here/bin/uurtjie-timer" "$HOME/.local/bin/uurtjie-timer"
@@ -72,16 +81,17 @@ else                                                           # classic hyprlan
     echo "    source = ~/.config/hypr/uurtjie-bindings.conf"
   fi
 fi
-
 if [[ ! -f "$HOME/.config/uurtjie/config.toml" ]]; then
   cp "$here/config.example.toml" "$HOME/.config/uurtjie/config.toml"
   echo "→ wrote ~/.config/uurtjie/config.toml — edit projects/paths, then: uurtjie reload"
 fi
+chmod 600 "$HOME/.config/uurtjie/config.toml"
 
 echo "→ systemd user service"
 install -Dm 644 "$here/systemd/uurtjie.service" "$HOME/.config/systemd/user/uurtjie.service"
 systemctl --user daemon-reload
-systemctl --user enable --now uurtjie.service
+systemctl --user enable uurtjie.service
+systemctl --user restart uurtjie.service
 
 if command -v omarchy >/dev/null && omarchy plugin list --json >/dev/null 2>&1; then
   echo "→ Omarchy Quattro bar widget"

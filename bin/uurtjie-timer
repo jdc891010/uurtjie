@@ -50,7 +50,11 @@ if [[ "${1:-}" == "--stop-prompt" ]]; then
   read -rsn1 key
   case "$key" in
     "")
-      out=$("$UURTJIE" stop --at "$at")
+      if ! out=$("$UURTJIE" stop --at "$at" 2>&1); then
+        printf '%s\n' "$out" >&2
+        notify "Timer was not stopped" "$out"
+        exit 1
+      fi
       id=$(grep -o '#[0-9]*' <<<"$out" | tr -d '#')
       printf '\e[32m✓ stopped\e[0m %s\n\n' "${out#stopped: }"
       describe; desc="$DESC"
@@ -59,7 +63,14 @@ if [[ "${1:-}" == "--stop-prompt" ]]; then
       ;;
     d|D)
       read -rsn1 -p "Discard ${mins} min? [y/N] " yn; echo
-      if [[ "$yn" == [yY] ]]; then "$UURTJIE" stop --discard >/dev/null; notify "Timer discarded" "$name"; fi
+      if [[ "$yn" == [yY] ]]; then
+        if out=$("$UURTJIE" stop --discard 2>&1); then
+          notify "Timer discarded" "$name"
+        else
+          notify "Timer was not discarded" "$out"
+          exit 1
+        fi
+      fi
       ;;
     *) notify "Timer still running" "$name" ;;
   esac
@@ -72,8 +83,12 @@ state=$("$UURTJIE" timer)
 if [[ $(field running <<<"$state") == "True" ]]; then
   elapsed=$(field elapsed <<<"$state")
   if (( ${elapsed:-0} < 60 )); then      # under a minute: discard without asking (the CLI enforces this too)
-    "$UURTJIE" stop --at "$pressed" >/dev/null
-    notify "Timer discarded" "under a minute"
+    if out=$("$UURTJIE" stop --at "$pressed" 2>&1); then
+      notify "Timer discarded" "under a minute"
+    else
+      notify "Timer was not stopped" "$out"
+      exit 1
+    fi
   else
     exec xdg-terminal-exec --app-id=uurtjie.timer --title="Uurtjie timer" -e "$0" --stop-prompt "$pressed"
   fi

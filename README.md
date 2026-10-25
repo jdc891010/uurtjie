@@ -84,6 +84,9 @@ Reports never bill raw entries. They're merged into **sessions** per project:
 - Each session lists its tasks (workspaces, branches, page titles, notes) and the git commits you made during it,
   and gets a one-line summary. Set `summary_command` to have an LLM write that summary (cached per session).
 
+Explicit non-billable entries block billing bridges, including time on another project. Non-billable
+time in the same project is excluded even if it overlaps an automatic entry.
+
 <p align="center"><img src="docs/images/cli-status.svg" alt="Terminal output of uurtjie status, uurtjie today and uurtjie sessions for a demo day: today's total, time per project, an hour-by-hour sparkline, earnings and three sessions with their tasks" width="900"></p>
 
 ## Requirements
@@ -142,6 +145,9 @@ under a project path counts. With Herdr, uurtjie asks Herdr's socket (`~/.config
 `herdr_socket` for a named session) which workspace and pane is focused, so each workspace becomes its own entry,
 with the agent recorded. Check what it sees with `herdr pane list`. To bill terminal time **only while Claude Code
 or Codex runs** in the focused pane, set `require_agent = true` on the project (`agents` lists which agents count).
+That restriction requires Herdr's agent information; plain terminals for that project are not counted.
+Plain-terminal tracking uses the terminal's foreground process group. If a terminal server exposes multiple
+PTYs through one window PID and the focused PTY cannot be identified, it is left untracked.
 
 ### The client's browser profile
 
@@ -213,6 +219,9 @@ uurtjie undo                              # remove the last manual entry
 ```
 
 Quick-add tokens can be in any order. A unique prefix of a project id is enough (`acme-i` for `acme-infra`).
+Overnight ranges use the next local calendar date, including daylight-saving changes. Ambiguous or
+nonexistent local clock times are rejected; use `add` with a full ISO datetime and UTC offset to resolve them.
+Edits must leave the end after the start; use full dates when changing which day an entry ends on.
 
 ## Calls and meetings
 
@@ -222,7 +231,8 @@ Tracking stops after `sleep_minutes` without input, which would drop a 40-minute
 
 - It is matched through the window rules. A dedicated client browser counts as soon as you join a call in it,
   whichever window is focused. A browser shared with personal windows only counts while the project's window is focused.
-- A microphone that goes quiet for less than `meeting_grace_seconds` (120, for example while muting) is the same call.
+- After a call is confirmed, a microphone that goes quiet for less than `meeting_grace_seconds` (120,
+  for example while muting) is the same call. Initial confirmation requires sustained microphone use.
 - Screen recorders and screen sharing (which capture your speakers) and dictation (`voxtype`) don't count. Add other
   apps to `meeting_ignore`. Turn the feature off with `meeting_detect = false`.
 - Calls overlap your normal entries, and sessions never double count, so a call while typing is billed once.
@@ -265,9 +275,15 @@ uurtjie invoice render 001 --pdf --detail sessions # rewrite the files from the 
   another invoice, is refused.
 - **Frozen figures.** Hours, rate, VAT and the daily breakdown are stored with the invoice, so later config changes
   never alter one you've sent. A database backup is taken before each issue.
-- **Money.** Per day: session hours × `human_factor`, rounded up to `rounding_minutes`. Subtotal = hours × rate, plus
+- **Money.** Per day: session hours × `human_factor`, rounded up to `rounding_minutes`, then multiplied by rate; plus
   VAT = subtotal × `vat_rate` %. Part payments are fine. The state goes `issued` → `sent` → `part-paid` / `overdue` →
   `paid`, and outstanding amounts show in the panel and tooltip.
+  Time stays precise through the rate calculation, including with rounding disabled. Each day's amount is
+  rounded to cents using decimal half-up rounding; the subtotal is the sum of those amounts. VAT is rounded
+  to cents with the same rule. Displayed hours may be abbreviated; they are not used to calculate money.
+- **Timers and locks.** Stopping a timer also respects issued periods. Resolve a forgotten timer before invoicing;
+  use `stop --force` only for an intentional correction, or void and reissue the invoice. `--at` cannot precede
+  the timer's start. If entries change while invoice summaries are being prepared, creation asks you to retry.
 - **What the client sees.** Page 1 is the invoice, page 2 the timesheet (decimal hours per day). Window titles and work
   summaries are only included with `--detail sessions`, so nothing from your screen leaks by default.
 - **Files** go to `[invoice] dir` (default `~/.local/share/uurtjie/invoices`). `--pdf` prints with headless
@@ -328,7 +344,7 @@ unit) logs every sample.
 | `uurtjie sessions [--date D] [--days N] [--project P] [--json]` | sessions with tasks, commits and summaries |
 | `uurtjie log [--date D] [--days N] [--project P] [--json]` | raw entries with ids |
 | `uurtjie add`, `uurtjie quick` / `q`, `uurtjie edit`, `uurtjie rm`, `uurtjie undo` | manual entries and corrections |
-| `uurtjie start [P] [-n note]`, `uurtjie stop [--discard]`, `uurtjie toggle`, `uurtjie timer` | manual timer |
+| `uurtjie start [P] [-n note]`, `uurtjie stop [--discard] [--force]`, `uurtjie toggle`, `uurtjie timer` | manual timer |
 | `uurtjie report [--month M] [--project P] [-f md\|csv\|json] [--by day\|session\|day-only] [-o file] [--record]` | timesheets |
 | `uurtjie invoice create\|list\|show\|sent\|paid\|void\|unbilled\|render` | invoices and payments |
 | `uurtjie export [--project P] [--to DIR]` | every entry as CSV |
@@ -349,6 +365,10 @@ Every command has `--help`. `--date` accepts `YYYY-MM-DD`, `today` and `yesterda
   and details such as the Herdr workspace, folder, git branch, agent and window title. Timers, invoices (with a frozen
   copy of their figures) and payments are stored too. Untracked windows are never written to the database.
 - **Live state** (what is being tracked right now) is in `$XDG_RUNTIME_DIR/uurtjie/state.json`.
+  Without that variable, it uses `/run/user/<uid>/uurtjie` when available, otherwise a private directory under
+  the data directory. A shared or incorrectly owned runtime root is rejected.
+- **Permissions:** data/config directories are private (`0700`), and database, backup, config, and newly written
+  invoice/export files are `0600`. Keep any synced backup destination private to your account too.
 - **Backups:** the daemon writes a verified copy of the database once a day and keeps `backup_keep` (30). Point
   `backup_dir` at a synced folder for off-machine copies. `uurtjie backup --now` makes an extra copy, for example
   before month-end. To restore: `systemctl --user stop uurtjie`, copy a backup over the database, then
@@ -405,7 +425,8 @@ the last tag, proposes the version, writes the changelog section and validates i
 `scripts/changelog.py`:
 
 1. `python3 scripts/changelog.py commits`: what changed since the last release (JSON).
-2. `python3 scripts/changelog.py bump patch|minor|major`: updates `uurtjie/__init__.py` **and** the widget manifest.
+2. `python3 scripts/changelog.py bump patch|minor|major`: updates `uurtjie/__init__.py`, the widget manifest,
+   and the panel's version together.
 3. `python3 scripts/changelog.py add X.Y.Z --notes-file notes.md`: inserts the dated section (refuses malformed notes,
    secrets and absolute home paths).
 4. `scripts/build-release.sh --check` (CI runs the same check on every PR).

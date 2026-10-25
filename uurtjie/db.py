@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import DATA_DIR
+from . import storage
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS spans (
@@ -92,13 +96,42 @@ def _migrate(con) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS payments_invoice ON payments(invoice_id)")
 
 
+@contextmanager
+def transaction(con):
+    """Serialize related reads and writes; nested callers join the outer transaction."""
+    if con.in_transaction:
+        yield
+        return
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        con.execute("COMMIT")
+    except BaseException:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+
+
+def accounting_state(con, start: int, end: int) -> tuple:
+    """Inputs to session accounting, including other projects that block gap bridging."""
+    spans = tuple(tuple(r) for r in con.execute(
+        "SELECT * FROM spans WHERE end_ts > ? AND start_ts < ? ORDER BY id", (start, end)))
+    timer = con.execute("SELECT * FROM timer WHERE start_ts < ?", (end,)).fetchone()
+    return spans, tuple(timer) if timer else None
+
+
 def db_path() -> Path:
     return DATA_DIR / "uurtjie.db"
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     path = path or db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    storage.private_dir(path.parent)
+    storage.private_file(path)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists() or sidecar.is_symlink():
+            storage.private_file(sidecar)
     con = sqlite3.connect(path, timeout=10, isolation_level=None)  # autocommit
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
@@ -150,21 +183,26 @@ def spans_between(con, start: int, end: int, project: str | None = None, billabl
 
 def backup(con, backup_dir: Path, keep: int = 30, name: str | None = None) -> Path:
     """Consistent online copy (safe while the daemon writes), verified, then old ones pruned."""
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    storage.private_dir(backup_dir)
     name = name or f"uurtjie-{time.strftime('%Y-%m-%d')}.db"
     dest = backup_dir / name
-    tmp = dest.with_suffix(".tmp")
-    tmp.unlink(missing_ok=True)
+    if Path(name).name != name:
+        raise ValueError("backup name must be a filename")
+    fd, tmp_name = tempfile.mkstemp(prefix=".uurtjie-backup-", dir=backup_dir)
+    os.close(fd)
+    tmp = Path(tmp_name)
     out = sqlite3.connect(tmp)
     try:
-        con.backup(out)
-        ok = out.execute("PRAGMA integrity_check").fetchone()[0]
+        try:
+            con.backup(out)
+            ok = out.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            out.close()
+        if ok != "ok":
+            raise RuntimeError(f"backup failed integrity check: {ok}")
+        tmp.replace(dest)
     finally:
-        out.close()
-    if ok != "ok":
         tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"backup failed integrity check: {ok}")
-    tmp.replace(dest)
     daily = sorted(backup_dir.glob("uurtjie-????-??-??.db"))
     for old in daily[:-keep] if keep > 0 else []:
         old.unlink(missing_ok=True)
@@ -183,18 +221,24 @@ def timer_get(con):
 
 
 def timer_start(con, project: str, note: str | None = None, at: int | None = None):
-    if timer_get(con):
-        raise RuntimeError("a timer is already running; stop it first")
-    con.execute("INSERT INTO timer(id, project, start_ts, note) VALUES (1,?,?,?)",
-                (project, at or int(time.time()), note))
+    with transaction(con):
+        if timer_get(con):
+            raise RuntimeError("a timer is already running; stop it first")
+        con.execute("INSERT INTO timer(id, project, start_ts, note) VALUES (1,?,?,?)",
+                    (project, at if at is not None else int(time.time()), note))
 
 
-def timer_stop(con, at: int | None = None, note: str | None = None) -> int | None:
-    t = timer_get(con)
-    if not t:
-        return None
-    end = at or int(time.time())
-    sid = open_span(con, t["project"], "manual", "timer", t["start_ts"], end,
-                    note=note or t["note"])
-    con.execute("DELETE FROM timer WHERE id=1")
-    return sid
+def timer_stop(con, at: int | None = None, note: str | None = None, *, force: bool = False) -> int | None:
+    from .invoice import check_unlocked
+    with transaction(con):
+        t = timer_get(con)
+        if not t:
+            return None
+        end = at if at is not None else int(time.time())
+        if end <= t["start_ts"]:
+            raise ValueError("stop time must be after the timer start")
+        check_unlocked(con, t["project"], t["start_ts"], end, force)
+        sid = open_span(con, t["project"], "manual", "timer", t["start_ts"], end,
+                        note=note if note is not None else t["note"])
+        con.execute("DELETE FROM timer WHERE id=1")
+        return sid

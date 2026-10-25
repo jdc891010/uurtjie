@@ -1,5 +1,4 @@
-# Merging into `release` publishes a GitHub Release: tarball + checksums, notes from CHANGELOG.md.
-# Only the newest KEEP_RELEASES releases stay hosted; older ones are deleted (their git tags are kept).
+# Build with read-only credentials; only publication can modify releases.
 name: release
 
 on:
@@ -8,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -18,46 +17,68 @@ env:
   KEEP_RELEASES: 3
 
 jobs:
-  release:
+  build:
+    if: github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.build.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-
-      - uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
-          python-version: "3.11"      # the project's minimum
-
+          python-version: "3.11"
       - name: Test
         run: |
           python3 -m unittest discover -s tests -v
           python3 -m unittest discover -s scripts/tests -v
-
       - name: Build tarball
         id: build
+        shell: bash
         run: scripts/build-release.sh | tail -n1 >> "$GITHUB_OUTPUT"
+      - name: Prepare notes
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" > dist/notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
 
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist/
       - name: Refuse to overwrite an existing release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.build.outputs.version }}
         run: |
           if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "::error::v$VERSION is already released. Bump the version in uurtjie/__init__.py and omarchy-plugin/jd.uurtjie/manifest.json, and add a CHANGELOG.md section."
+            echo "::error::v$VERSION is already released. Bump the version and add a CHANGELOG.md section."
             exit 1
           fi
-
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.build.outputs.version }}
         run: |
-          scripts/release-notes.sh "$VERSION" > notes.md
+          cd dist
+          sha256sum -c SHA256SUMS
           gh release create "v$VERSION" \
-            "dist/uurtjie-$VERSION.tar.gz" dist/uurtjie.tar.gz dist/SHA256SUMS \
+            "uurtjie-$VERSION.tar.gz" uurtjie.tar.gz SHA256SUMS \
             --title "uurtjie $VERSION" --notes-file notes.md --target "$GITHUB_SHA" --latest
-
       - name: Keep only the newest releases
         env:
           GH_TOKEN: ${{ github.token }}

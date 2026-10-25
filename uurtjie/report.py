@@ -8,7 +8,7 @@ import math
 from collections import defaultdict
 from datetime import date, datetime, time as dtime, timedelta
 
-from . import db
+from . import db, money
 from .config import Config
 
 
@@ -101,16 +101,13 @@ def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> di
     per_day: dict = defaultdict(int)
     for s in sessions_between(con, cfg, start, end, billable_only=True, now=now):
         per_day[(s["project"], s["date"])] += s["seconds"]
-    hours: dict[str, float] = defaultdict(float)
+    out = defaultdict(lambda: money.decimal(0))
     for (pid, _day), secs in per_day.items():
         p = cfg.project(pid)
         if p and p.rate > 0:
-            hours[pid] += round(round_up(int(secs * p.human_factor), cfg.rounding_minutes) / 3600, 2)
-    out: dict[str, float] = defaultdict(float)
-    for pid, h in hours.items():
-        p = cfg.project(pid)
-        out[p.currency] += round(round(h, 2) * p.rate, 2)
-    return {cur: round(v, 2) for cur, v in out.items() if v}
+            _, amount = money.bill_day(secs, p.human_factor, cfg.rounding_minutes, p.rate)
+            out[p.currency] += money.decimal(amount)
+    return {cur: money.cents(v) for cur, v in out.items() if v}
 
 
 def month_bounds(year: int, month: int) -> tuple[int, int]:
@@ -124,11 +121,11 @@ def sessions_between(con, cfg: Config, start: int, end: int, billable_only: bool
     """Sessions (all projects) in [start, end), including a running manual timer."""
     from . import sessions as S
     now = now or int(datetime.now().timestamp())
-    rows = [dict(r) for r in db.spans_between(con, start, end, None, billable_only)]
+    rows = [dict(r) for r in db.spans_between(con, start, end)]
     v = _virtual_timer_span(con, now)
     if v and v["end_ts"] > start:
         rows.append(v)
-    out = S.build_sessions(rows, cfg, clip=(start, end))
+    out = S.build_sessions(rows, cfg, clip=(start, end), billable_only=billable_only)
     if with_commits:
         S.attach_commits(out, cfg)
     if summaries:
@@ -137,7 +134,7 @@ def sessions_between(con, cfg: Config, start: int, end: int, billable_only: bool
 
 
 def hourly_minutes(sessions: list[dict], day: date) -> list[float]:
-    """Minutes worked in each local clock hour of `day` (24 buckets, 0-60 each). Built from the same
+    """Minutes worked in each local clock hour of `day` (repeated hours combined). Built from the same
     sessions as the day total, so the buckets add up to it."""
     edges = [int(datetime.combine(day, dtime(h)).astimezone().timestamp()) for h in range(24)]
     edges.append(local_midnight(day + timedelta(days=1)))
@@ -147,7 +144,7 @@ def hourly_minutes(sessions: list[dict], day: date) -> list[float]:
             lo, hi = max(s["start"], edges[h]), min(s["end"], edges[h + 1])
             if hi > lo:
                 out[h] += (hi - lo) / 60
-    return [round(min(m, 60.0), 1) for m in out]
+    return [round(m, 1) for m in out]
 
 
 def month_report(con, cfg: Config, year: int, month: int, project_id: str, with_git: bool = True) -> dict:
@@ -157,7 +154,7 @@ def month_report(con, cfg: Config, year: int, month: int, project_id: str, with_
 
 
 def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, with_git: bool = True,
-                 period: str | None = None) -> dict:
+                 period: str | None = None, excluded_days: set[date] | None = None) -> dict:
     """Billable days/sessions for whole days d_from..d_to inclusive."""
     from . import sessions as S
     proj = cfg.project(project_id)
@@ -165,7 +162,7 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
     factor = proj.human_factor if proj else 1.0
     start, end = local_midnight(d_from), local_midnight(d_to + timedelta(days=1))
     sess = [s for s in sessions_between(con, cfg, start, end, billable_only=True, with_commits=with_git)
-            if s["project"] == project_id]
+            if s["project"] == project_id and s["date"] not in (excluded_days or ())]
     S.summarize(sess, cfg, con)
 
     by_day: dict = defaultdict(list)
@@ -175,19 +172,18 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
     for d in sorted(by_day):
         ss = by_day[d]
         raw = sum(s["seconds"] for s in ss)
-        billed = round_up(int(raw * factor), cfg.rounding_minutes)
-        hours = round(billed / 3600, 2)
+        hours, amount = money.bill_day(raw, factor, cfg.rounding_minutes, rate)
         days.append({
             "date": d.isoformat(),
             "weekday": d.strftime("%a"),
             "raw_hours": round(raw / 3600, 2),
             "hours": hours,
-            "amount": round(hours * rate, 2),
+            "amount": amount,
             "summary": " | ".join(s["summary"] for s in ss),
             "commits": sum(len(s.get("commits", [])) for s in ss),
             "sessions": [S.session_json(s) for s in ss],
         })
-    total_hours = round(sum(d["hours"] for d in days), 2)
+    total_hours = float(sum(money.decimal(d["hours"]) for d in days))
     return {
         "project": project_id,
         "name": proj.name if proj else project_id,
@@ -200,7 +196,7 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
         "days": days,
         "total_raw_hours": round(sum(d["raw_hours"] for d in days), 2),
         "total_hours": total_hours,
-        "total_amount": round(total_hours * rate, 2),
+        "total_amount": money.cents(sum(money.decimal(d["amount"]) for d in days)),
     }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import io
 import json
 import os
 import re
@@ -12,12 +13,14 @@ import sys
 import time
 import tomllib
 from datetime import date, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
 from . import __version__
 from . import config as config_mod
 from . import db, report
 from . import config_edit
+from . import storage
 from . import invoice as invoice_mod
 from .config_edit import ConfigError
 from .invoice import InvoiceError
@@ -52,8 +55,32 @@ def parse_clock(s: str, on: date) -> int:
     s = s.strip()
     if re.fullmatch(r"\d{1,2}:\d{2}", s):
         h, m = map(int, s.split(":"))
-        return int(datetime(on.year, on.month, on.day, h, m).astimezone().timestamp())
-    return int(datetime.fromisoformat(s).astimezone().timestamp())
+        value = datetime(on.year, on.month, on.day, h, m)
+    else:
+        value = datetime.fromisoformat(s)
+    if value.tzinfo is not None:
+        return int(value.timestamp())
+    # Refuse ambiguous/nonexistent local wall times; an explicit ISO offset resolves them.
+    candidates = {int(value.replace(fold=fold).timestamp()) for fold in (0, 1)}
+    candidates = {ts for ts in candidates if datetime.fromtimestamp(ts).replace(fold=0) == value.replace(fold=0)}
+    if len(candidates) != 1:
+        raise ValueError("ambiguous or nonexistent local time; give an ISO datetime with a UTC offset")
+    return candidates.pop()
+
+
+def clock_range(start: str, end: str, day: date) -> tuple[int, int]:
+    a = parse_clock(start, day)
+    if re.fullmatch(r"\d{1,2}:\d{2}", end):
+        local_start = datetime.fromtimestamp(a)
+        h, m = map(int, end.split(":"))
+        end_clock = datetime(day.year, day.month, day.day, h, m).time()
+        end_day = local_start.date() + timedelta(days=end_clock <= local_start.time())
+        b = parse_clock(end, end_day)
+    else:
+        b = parse_clock(end, day)
+    if b <= a:
+        raise ValueError("end time must be after start time")
+    return a, b
 
 
 def ts_local(ts: int, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -148,8 +175,9 @@ def hourly_tip(hourly: dict) -> list[str]:
     if not worked:
         return []
     lo, hi = worked[0], worked[-1]
-    bars = "".join(SPARK[min(7, int(mins[h] / 60 * 8))] if mins[h] > 0 else "·" for h in range(lo, hi + 1))
-    return [f"By hour {lo:02d}h–{hi:02d}h (full block = 60 min)", f"  {bars}",
+    scale = max(60, max(mins))
+    bars = "".join(SPARK[min(7, int(mins[h] / scale * 8))] if mins[h] > 0 else "·" for h in range(lo, hi + 1))
+    return [f"By hour {lo:02d}h–{hi:02d}h (full block = {scale:g} min)", f"  {bars}",
             f"  busiest {hourly['peak_hour']:02d}h: {mins[hourly['peak_hour']]:.0f} min"]
 
 
@@ -259,6 +287,7 @@ def build_status(cfg, con) -> dict:
 
 def cmd_daemon(args, cfg, con):
     from .daemon import run
+    con.close()                         # run() owns the daemon's connection
     asyncio.run(run())
 
 
@@ -343,7 +372,7 @@ def cmd_export(args, cfg, con):
     dest_dir = Path(args.to).expanduser() if args.to else documents_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"uurtjie-log-{time.strftime('%Y-%m-%d_%H%M%S')}.csv"
-    with open(dest, "w", newline="", encoding="utf-8") as f:
+    with io.StringIO(newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "date", "start", "end", "minutes", "project", "source", "area", "note", "billable"])
         for r in rows:
@@ -352,9 +381,20 @@ def cmd_export(args, cfg, con):
             w.writerow([r["id"], ts_local(r["start_ts"], "%Y-%m-%d"), ts_local(r["start_ts"], "%H:%M:%S"),
                         ts_local(r["end_ts"], "%Y-%m-%d %H:%M:%S"), f'{(r["end_ts"] - r["start_ts"]) / 60:.1f}',
                         r["project"], r["source"], label, r["note"] or "", int(bool(r["billable"]))])
+        storage.atomic_write(dest, f.getvalue())
     print(f"exported {len(rows)} entries: {dest}")
 
 
+def entry_write(fn):
+    """Keep manual lock checks and their writes atomic against invoice issuance."""
+    @wraps(fn)
+    def wrapped(args, cfg, con):
+        with db.transaction(con):
+            return fn(args, cfg, con)
+    return wrapped
+
+
+@entry_write
 def cmd_add(args, cfg, con):
     pid = require_project(cfg, args.project, args.force)
     d = parse_date(args.date)
@@ -367,11 +407,11 @@ def cmd_add(args, cfg, con):
             start = end_ref - secs
         end = start + secs
     elif args.start and args.end:
-        start, end = parse_clock(args.start, d), parse_clock(args.end, d)
-        if end <= start:
-            end += 86400
+        start, end = clock_range(args.start, args.end, d)
     else:
         sys.exit("give --duration, or --from and --to")
+    if end <= start:
+        raise ValueError("duration must be positive")
     invoice_mod.check_unlocked(con, pid, start, end, args.force)
     sid = db.open_span(con, pid, "manual", "manual", start, end, note=args.note, billable=not args.non_billable)
     print(f"added #{sid}: {pid} {ts_local(start)}–{ts_local(end, '%H:%M')} ({fmt_hm(end - start)})")
@@ -385,6 +425,7 @@ def auto_project(cfg) -> str | None:
     return cfg.default_project
 
 
+@entry_write
 def cmd_start(args, cfg, con):
     pid = require_project(cfg, args.project or auto_project(cfg), args.force)
     try:
@@ -398,20 +439,26 @@ def cmd_start(args, cfg, con):
 MIN_TIMER_SECONDS = 60       # shorter manual timers are discarded on stop, without asking
 
 
+@entry_write
 def cmd_stop(args, cfg, con):
     at = getattr(args, "at", None)
+    t = db.timer_get(con)
+    end = at if at is not None else int(time.time())
+    if t:
+        if at is not None and at <= t["start_ts"] and not getattr(args, "discard", False):
+            raise ValueError("stop time must be after the timer start")
+        invoice_mod.check_unlocked(con, t["project"], t["start_ts"], end, getattr(args, "force", False))
     if getattr(args, "discard", False):
-        if not db.timer_get(con):
+        if not t:
             sys.exit("no timer running")
         con.execute("DELETE FROM timer WHERE id=1")
         print("timer discarded")
         return
-    t = db.timer_get(con)
-    if t and (at or int(time.time())) - t["start_ts"] < MIN_TIMER_SECONDS:
+    if t and end - t["start_ts"] < MIN_TIMER_SECONDS:
         con.execute("DELETE FROM timer WHERE id=1")        # accidental start/stop: nothing worth keeping
         print("timer discarded (under a minute)")
         return
-    sid = db.timer_stop(con, at=at, note=args.note)
+    sid = db.timer_stop(con, at=at, note=args.note, force=getattr(args, "force", False))
     if sid is None:
         sys.exit("no timer running")
     r = con.execute("SELECT * FROM spans WHERE id=?", (sid,)).fetchone()
@@ -488,9 +535,7 @@ def parse_quick(line: str, cfg, today: date | None = None, now: int | None = Non
     if not project:
         raise ValueError("no project (and no default_project set)")
     if rng:
-        start, end = parse_clock(rng[0], day), parse_clock(rng[1], day)
-        if end <= start:
-            end += 86400
+        start, end = clock_range(rng[0], rng[1], day)
     elif secs:
         now = now or int(time.time())
         end = now if day == today else parse_clock("17:00", day)
@@ -501,6 +546,7 @@ def parse_quick(line: str, cfg, today: date | None = None, now: int | None = Non
             "note": " ".join(rest) or None, "billable": billable}
 
 
+@entry_write
 def cmd_quick(args, cfg, con):
     line = " ".join(args.line)
     try:
@@ -518,6 +564,7 @@ def cmd_quick(args, cfg, con):
           f"{' [non-billable]' if not e['billable'] else ''}")
 
 
+@entry_write
 def cmd_undo(args, cfg, con):
     """Delete the most recently created manual entry (fix a fat-fingered quick add)."""
     r = con.execute("SELECT id, project, start_ts, end_ts FROM spans WHERE source='manual' "
@@ -529,6 +576,7 @@ def cmd_undo(args, cfg, con):
     print(f"removed #{r['id']} ({r['project']})")
 
 
+@entry_write
 def cmd_rm(args, cfg, con):
     for i in args.ids:
         r = con.execute("SELECT project, start_ts, end_ts FROM spans WHERE id=?", (i,)).fetchone()
@@ -542,11 +590,13 @@ def cmd_rm(args, cfg, con):
         print(f"#{i} {'deleted' if n else 'not found'}")
 
 
+@entry_write
 def cmd_edit(args, cfg, con):
     r = con.execute("SELECT * FROM spans WHERE id=?", (args.id,)).fetchone()
     if not r:
         sys.exit(f"#{args.id} not found")
     d = datetime.fromtimestamp(r["start_ts"]).date()
+    end_day = datetime.fromtimestamp(r["end_ts"]).date()
     sets, vals = [], []
     if args.project:
         sets.append("project=?"); vals.append(require_project(cfg, args.project, args.force))
@@ -555,13 +605,15 @@ def cmd_edit(args, cfg, con):
     if args.start:
         sets.append("start_ts=?"); vals.append(parse_clock(args.start, d))
     if args.end:
-        sets.append("end_ts=?"); vals.append(parse_clock(args.end, d))
+        sets.append("end_ts=?"); vals.append(parse_clock(args.end, end_day))
     if args.billable is not None:
         sets.append("billable=?"); vals.append(1 if args.billable == "yes" else 0)
     if not sets:
         sys.exit("nothing to change")
     new_start = parse_clock(args.start, d) if args.start else r["start_ts"]
-    new_end = parse_clock(args.end, d) if args.end else r["end_ts"]
+    new_end = parse_clock(args.end, end_day) if args.end else r["end_ts"]
+    if new_end <= new_start:
+        raise ValueError("end time must be after start time (use a full date for overnight changes)")
     for proj, a, b in ((r["project"], r["start_ts"], r["end_ts"]),
                        (args.project or r["project"], new_start, new_end)):
         invoice_mod.check_unlocked(con, proj, a, b, args.force)
@@ -585,8 +637,7 @@ def cmd_report(args, cfg, con):
         text = report.render(rep, args.format, args.by)
         if args.out:
             out = Path(args.out.format(project=pid, period=rep["period"])).expanduser()
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(text)
+            storage.atomic_write(out, text)
             print(f"wrote {out}  ({rep['total_hours']:.2f} h, {rep['currency']} {rep['total_amount']:,.2f})")
         else:
             outs.append(text)
@@ -860,11 +911,11 @@ def cmd_config(args, cfg, con):
             tomllib.loads(path.read_text())
             config_mod.load(path)
         except Exception as e:
-            path.write_text(before)
+            storage.atomic_write(path, before)
             sys.exit(f"that edit doesn't load ({e}); your previous config was restored")
         if path.read_text() != before:
             config_edit.write(path, path.read_text())
-            path.with_name(path.name + ".bak").write_text(before)
+            storage.atomic_write(path.with_name(path.name + ".bak"), before)
             reload_daemon()
         else:
             print("no changes")
@@ -920,6 +971,7 @@ def main(argv=None):
     s.add_argument("--note", "-n")
     s.add_argument("--at", type=int, help="stop time as unix seconds (default: now)")
     s.add_argument("--discard", action="store_true", help="throw the running timer away")
+    s.add_argument("--force", action="store_true", help="save time inside an invoiced period")
     s.set_defaults(fn=cmd_stop)
 
     sub.add_parser("timer", help="timer state as JSON").set_defaults(fn=cmd_timer)
@@ -1041,8 +1093,10 @@ def main(argv=None):
         args.fn(args, cfg, con)
     except BrokenPipeError:          # e.g. `uurtjie log | head`
         sys.stderr.close()
-    except (InvoiceError, ConfigError) as e:
+    except (InvoiceError, ConfigError, ValueError) as e:
         sys.exit(str(e))
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":

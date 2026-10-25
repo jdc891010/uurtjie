@@ -42,7 +42,8 @@ def _overlaps(intervals: list[tuple[int, int]], s: int, e: int) -> bool:
     return any(a < e and b > s for a, b in intervals)
 
 
-def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None = None) -> list[dict]:
+def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None = None,
+                   billable_only: bool = False) -> list[dict]:
     """rows: spans (dicts) of any projects. Returns sessions sorted by start."""
     pieces: dict[date, list[dict]] = defaultdict(list)
     for r in rows:
@@ -59,9 +60,28 @@ def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None =
     for d, day_rows in sorted(pieces.items()):
         by_proj: dict[str, list[dict]] = defaultdict(list)
         for r in day_rows:
-            by_proj[r["project"]].append(r)
+            if not billable_only or r.get("billable", 1):
+                # Explicit non-billable time in this project takes precedence over overlaps.
+                intervals = [(r["start_ts"], r["end_ts"])]
+                if billable_only:
+                    for other in day_rows:
+                        if other["project"] == r["project"] and not other.get("billable", 1):
+                            a, b = other["start_ts"], other["end_ts"]
+                            remaining = []
+                            for lo, hi in intervals:
+                                if a >= hi or b <= lo:
+                                    remaining.append((lo, hi))
+                                else:
+                                    if lo < a:
+                                        remaining.append((lo, a))
+                                    if b < hi:
+                                        remaining.append((b, hi))
+                            intervals = remaining
+                for lo, hi in intervals:
+                    by_proj[r["project"]].append({**r, "start_ts": lo, "end_ts": hi})
         for pid, prow in by_proj.items():
-            others = [(r["start_ts"], r["end_ts"]) for r in day_rows if r["project"] != pid]
+            others = [(r["start_ts"], r["end_ts"]) for r in day_rows
+                      if r["project"] != pid or (billable_only and not r.get("billable", 1))]
             prow.sort(key=lambda r: (r["start_ts"], r["end_ts"]))
             cur = None
             for r in prow:
