@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jd.uurtjie",
   "name": "Uurtjie",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": "jdc891010",
   "license": "MIT",
   "description": "Client hours tracked from Herdr workspaces, Claude Code/Codex terminals and a Chrome profile.",

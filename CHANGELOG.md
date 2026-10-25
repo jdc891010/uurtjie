@@ -3,6 +3,11 @@
 Each `## [x.y.z]` section becomes the notes of that GitHub release (see README › Releasing).
 The version must match `uurtjie/__init__.py`, the widget manifest, and the panel's version.
 
+## [0.5.1] - 2026-10-25
+
+### Fixed
+- Time recorded by 0.4.x lost about 10 minutes a week in 0.5.0. The old daemon left a 5 to 6 second hole at every window switch, and 0.5.0 joined those pieces without counting the hole. A gap with no sample in it (under two `tick`s, so up to 9 seconds by default) now counts as work for the project on both sides. A gap that held a sample of something untracked still never counts, a hole at a switch between two projects goes to neither, and a hole next to non-billable time is not billed.
+
 ## [0.5.0] - 2026-10-25
 
 ### Added
@@ -13,7 +18,7 @@ The version must match `uurtjie/__init__.py`, the widget manifest, and the panel
 
 ### Changed
 - Human time is the union of recorded focus, meeting and manual evidence. Each overlapping second belongs to one project: manual time and timers take precedence over meetings, then focused windows.
-- Gap billing (`bridge_minutes`) and time rounding (`rounding_minutes`) now default to 0 and affect invoices only. A gap with no sample in it (under two `tick`s) still counts as work, so entries recorded by 0.4.x lose nothing at window switches; a gap that held a sample of something untracked never counts.
+- Gap billing (`bridge_minutes`) and time rounding (`rounding_minutes`) now default to 0 and affect invoices only. A single-sample tolerance can group evidence without adding seconds.
 - The widget shows exact human time and earnings. Its tooltip and panel explain when configured invoice adjustments may produce different amounts.
 - **Action:** hours may drop compared with 0.4.x because gaps and cross-project overlaps no longer inflate human time. Remove `human_factor`; set `bridge_minutes` and `rounding_minutes` to 0 to adopt the exact defaults. Existing explicit invoice settings remain configured. Already-issued invoices are frozen and are not recalculated.
 
