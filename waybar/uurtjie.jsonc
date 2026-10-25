@@ -1,0 +1,14 @@
+// Pre-Quattro Omarchy (Waybar): add "custom/uurtjie" to modules-right in
+// ~/.config/waybar/config.jsonc and paste this block, then omarchy-restart-waybar.
+"custom/uurtjie": {
+  "exec": "~/.local/bin/uurtjie status --waybar",
+  "return-type": "json",
+  "interval": 10,
+  "on-click": "xdg-terminal-exec sh -c 'uurtjie week; echo; read -n1 -p \"press a key\"'",
+  "on-click-right": "~/.local/bin/uurtjie-timer",
+  "tooltip": true
+}
+
+// Optional ~/.config/waybar/style.css:
+// #custom-uurtjie.idle, #custom-uurtjie.stopped { opacity: 0.5; }
+// #custom-uurtjie.timer { color: @accent; }

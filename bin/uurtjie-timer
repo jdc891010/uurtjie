@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# One shortcut for the manual timer (bind to e.g. SUPER+ALT+T):
+#   press 1: start — project = whatever uurtjie sees you focused on, else default_project
+#   press 2: under a minute -> discarded silently; otherwise a small popup — Enter stops (at the moment you pressed), k keeps running, d discards
+#            then type an optional description, Enter to save (Enter on empty = no description)
+set -uo pipefail
+UURTJIE="$HOME/.local/bin/uurtjie"
+notify() { notify-send -a uurtjie -i appointment-soon "$@" 2>/dev/null || true; }
+field() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1') or '')"; }
+
+# Description prompt with voice. Omarchy's dictation (Voxtype) types into the focused window,
+# which is this popup, so the spoken text lands in the line below and stays editable.
+#   v      -> start listening, any key stops, then edit/confirm with Enter
+#   Enter  -> skip      any other key -> just type
+# Holding SUPER+CTRL+X while the line is open also works (Omarchy's push-to-talk).
+describe() {
+  local first; DESC=""
+  if command -v voxtype >/dev/null; then
+    printf '\e[2m[v] speak   or start typing   [Enter] skip\e[0m\n' >&2
+  else
+    printf '\e[2mtype a description, [Enter] to skip  (voice: Omarchy menu › Install › AI › Dictation)\e[0m\n' >&2
+  fi
+  read -rsn1 first
+  [[ -z "$first" ]] && return
+  if [[ "$first" == [vV] ]] && command -v voxtype >/dev/null; then
+    if voxtype record start >/dev/null 2>&1; then
+      printf '\e[31m● listening…\e[0m press any key to stop' >&2
+      read -rsn1 _
+      voxtype record stop >/dev/null 2>&1
+      printf '\r\e[K\e[2mtranscribing… edit if needed, Enter to save\e[0m\n' >&2
+      sleep 0.3
+    else
+      printf '\e[33mcouldn’t start dictation (is the voxtype service running?) — type instead\e[0m\n' >&2
+    fi
+    read -e -r -p "Description: " DESC   # transcribed text is typed into this line
+  else
+    read -e -r -i "$first" -p "Description: " DESC
+  fi
+}
+
+if [[ "${1:-}" == "--stop-prompt" ]]; then
+  at="$2"
+  state=$("$UURTJIE" timer)
+  [[ $(field running <<<"$state") == "True" ]] || { echo "No timer running."; sleep 1; exit 0; }
+  name=$(field name <<<"$state"); started=$(field start_hm <<<"$state")
+  start=$(field start <<<"$state"); mins=$(( (at - start) / 60 ))
+  printf '\e[1mStop timer?\e[0m  %s\n' "$name"
+  printf 'started %s · %dh%02d\n\n' "$started" $((mins / 60)) $((mins % 60))
+  printf '\e[2m[Enter] stop   [k] keep running   [d] discard\e[0m\n'
+  read -rsn1 key
+  case "$key" in
+    "")
+      out=$("$UURTJIE" stop --at "$at")
+      id=$(grep -o '#[0-9]*' <<<"$out" | tr -d '#')
+      printf '\e[32m✓ stopped\e[0m %s\n\n' "${out#stopped: }"
+      describe; desc="$DESC"
+      [[ -n "$desc" && -n "$id" ]] && "$UURTJIE" edit "$id" --note "$desc" >/dev/null
+      notify "Timer stopped" "$name · $((mins / 60))h$(printf %02d $((mins % 60)))${desc:+ — $desc}"
+      ;;
+    d|D)
+      read -rsn1 -p "Discard ${mins} min? [y/N] " yn; echo
+      if [[ "$yn" == [yY] ]]; then "$UURTJIE" stop --discard >/dev/null; notify "Timer discarded" "$name"; fi
+      ;;
+    *) notify "Timer still running" "$name" ;;
+  esac
+  exit 0
+fi
+
+# --- shortcut entry point --------------------------------------------------
+pressed=$(date +%s)                    # stop time = when you pressed, not when you confirm
+state=$("$UURTJIE" timer)
+if [[ $(field running <<<"$state") == "True" ]]; then
+  elapsed=$(field elapsed <<<"$state")
+  if (( ${elapsed:-0} < 60 )); then      # under a minute: discard without asking (the CLI enforces this too)
+    "$UURTJIE" stop --at "$pressed" >/dev/null
+    notify "Timer discarded" "under a minute"
+  else
+    exec xdg-terminal-exec --app-id=uurtjie.timer --title="Uurtjie timer" -e "$0" --stop-prompt "$pressed"
+  fi
+else
+  out=$("$UURTJIE" start 2>&1) && notify "Timer started" "${out#timer started for }" || notify "Uurtjie" "$out"
+fi

@@ -1,0 +1,254 @@
+"""Aggregation: per-day union of spans (no double counting), rounding, monthly invoice data."""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import math
+from collections import defaultdict
+from datetime import date, datetime, time as dtime, timedelta
+
+from . import db
+from .config import Config
+
+
+def local_midnight(d: date) -> int:
+    return int(datetime.combine(d, dtime.min).astimezone().timestamp())
+
+
+def split_by_day(start: int, end: int):
+    """Yield (date, start, end) pieces of [start, end) split at local midnight."""
+    cur = start
+    while cur < end:
+        d = datetime.fromtimestamp(cur).astimezone().date()
+        nxt = local_midnight(d + timedelta(days=1))
+        piece_end = min(end, nxt)
+        yield d, cur, piece_end
+        cur = piece_end
+
+
+def union_seconds(intervals: list[tuple[int, int]]) -> int:
+    total, cur_s, cur_e = 0, None, None
+    for s, e in sorted(intervals):
+        if cur_e is None or s > cur_e:
+            if cur_e is not None:
+                total += cur_e - cur_s
+            cur_s, cur_e = s, e
+        else:
+            cur_e = max(cur_e, e)
+    if cur_e is not None:
+        total += cur_e - cur_s
+    return total
+
+
+def round_up(seconds: int, minutes: int) -> int:
+    if minutes <= 0 or seconds <= 0:
+        return seconds
+    step = minutes * 60
+    return math.ceil(seconds / step) * step
+
+
+def _virtual_timer_span(con, now: int):
+    t = db.timer_get(con)
+    if not t:
+        return None
+    return {"id": None, "project": t["project"], "source": "manual", "ctx_key": "timer",
+            "start_ts": t["start_ts"], "end_ts": now, "detail": None, "note": t["note"], "billable": 1}
+
+
+def daily_totals(con, start: int, end: int, project: str | None = None,
+                 billable_only: bool = False, include_timer: bool = True, now: int | None = None):
+    """Return {(project, date): {"seconds": int, "sources": {src: s}, "contexts": set, "notes": list}}."""
+    now = now or int(datetime.now().timestamp())
+    rows = [dict(r) for r in db.spans_between(con, start, end, project, billable_only)]
+    if include_timer:
+        v = _virtual_timer_span(con, now)
+        if v and (project is None or v["project"] == project) and v["end_ts"] > start:
+            rows.append(v)
+
+    buckets: dict = defaultdict(lambda: {"intervals": [], "by_source": defaultdict(list),
+                                         "contexts": set(), "notes": []})
+    for r in rows:
+        s, e = max(r["start_ts"], start), min(r["end_ts"], end)
+        if e <= s:
+            continue
+        detail = json.loads(r["detail"]) if r.get("detail") else {}
+        label = detail.get("workspace_label") or detail.get("window") or r.get("ctx_key")
+        for d, ps, pe in split_by_day(s, e):
+            b = buckets[(r["project"], d)]
+            b["intervals"].append((ps, pe))
+            b["by_source"][r["source"]].append((ps, pe))
+            if label and r["source"] != "manual":
+                b["contexts"].add(f'{r["source"]}:{label}')
+            if r.get("note") and r["note"] not in b["notes"]:
+                b["notes"].append(r["note"])
+
+    out = {}
+    for key, b in buckets.items():
+        out[key] = {
+            "seconds": union_seconds(b["intervals"]),
+            "sources": {src: union_seconds(iv) for src, iv in b["by_source"].items()},
+            "contexts": sorted(b["contexts"]),
+            "notes": b["notes"],
+        }
+    return out
+
+
+def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> dict[str, float]:
+    """Billable money in [start, end) per currency, worked out the way invoices do it: per project and
+    day, session hours x human_factor rounded up to rounding_minutes, hours x rate. Includes a running timer."""
+    now = now or int(datetime.now().timestamp())
+    per_day: dict = defaultdict(int)
+    for s in sessions_between(con, cfg, start, end, billable_only=True, now=now):
+        per_day[(s["project"], s["date"])] += s["seconds"]
+    hours: dict[str, float] = defaultdict(float)
+    for (pid, _day), secs in per_day.items():
+        p = cfg.project(pid)
+        if p and p.rate > 0:
+            hours[pid] += round(round_up(int(secs * p.human_factor), cfg.rounding_minutes) / 3600, 2)
+    out: dict[str, float] = defaultdict(float)
+    for pid, h in hours.items():
+        p = cfg.project(pid)
+        out[p.currency] += round(round(h, 2) * p.rate, 2)
+    return {cur: round(v, 2) for cur, v in out.items() if v}
+
+
+def month_bounds(year: int, month: int) -> tuple[int, int]:
+    first = date(year, month, 1)
+    nxt = date(year + (month == 12), month % 12 + 1, 1)
+    return local_midnight(first), local_midnight(nxt)
+
+
+def sessions_between(con, cfg: Config, start: int, end: int, billable_only: bool = False,
+                     with_commits: bool = False, summaries: bool = False, now: int | None = None):
+    """Sessions (all projects) in [start, end), including a running manual timer."""
+    from . import sessions as S
+    now = now or int(datetime.now().timestamp())
+    rows = [dict(r) for r in db.spans_between(con, start, end, None, billable_only)]
+    v = _virtual_timer_span(con, now)
+    if v and v["end_ts"] > start:
+        rows.append(v)
+    out = S.build_sessions(rows, cfg, clip=(start, end))
+    if with_commits:
+        S.attach_commits(out, cfg)
+    if summaries:
+        S.summarize(out, cfg, con)
+    return out
+
+
+def hourly_minutes(sessions: list[dict], day: date) -> list[float]:
+    """Minutes worked in each local clock hour of `day` (24 buckets, 0-60 each). Built from the same
+    sessions as the day total, so the buckets add up to it."""
+    edges = [int(datetime.combine(day, dtime(h)).astimezone().timestamp()) for h in range(24)]
+    edges.append(local_midnight(day + timedelta(days=1)))
+    out = [0.0] * 24
+    for s in sessions:
+        for h in range(24):
+            lo, hi = max(s["start"], edges[h]), min(s["end"], edges[h + 1])
+            if hi > lo:
+                out[h] += (hi - lo) / 60
+    return [round(min(m, 60.0), 1) for m in out]
+
+
+def month_report(con, cfg: Config, year: int, month: int, project_id: str, with_git: bool = True) -> dict:
+    first = date(year, month, 1)
+    last = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+    return range_report(con, cfg, first, last, project_id, with_git, period=f"{year:04d}-{month:02d}")
+
+
+def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, with_git: bool = True,
+                 period: str | None = None) -> dict:
+    """Billable days/sessions for whole days d_from..d_to inclusive."""
+    from . import sessions as S
+    proj = cfg.project(project_id)
+    rate = proj.rate if proj else 0.0
+    factor = proj.human_factor if proj else 1.0
+    start, end = local_midnight(d_from), local_midnight(d_to + timedelta(days=1))
+    sess = [s for s in sessions_between(con, cfg, start, end, billable_only=True, with_commits=with_git)
+            if s["project"] == project_id]
+    S.summarize(sess, cfg, con)
+
+    by_day: dict = defaultdict(list)
+    for s in sess:
+        by_day[s["date"]].append(s)
+    days = []
+    for d in sorted(by_day):
+        ss = by_day[d]
+        raw = sum(s["seconds"] for s in ss)
+        billed = round_up(int(raw * factor), cfg.rounding_minutes)
+        hours = round(billed / 3600, 2)
+        days.append({
+            "date": d.isoformat(),
+            "weekday": d.strftime("%a"),
+            "raw_hours": round(raw / 3600, 2),
+            "hours": hours,
+            "amount": round(hours * rate, 2),
+            "summary": " | ".join(s["summary"] for s in ss),
+            "commits": sum(len(s.get("commits", [])) for s in ss),
+            "sessions": [S.session_json(s) for s in ss],
+        })
+    total_hours = round(sum(d["hours"] for d in days), 2)
+    return {
+        "project": project_id,
+        "name": proj.name if proj else project_id,
+        "client": proj.client if proj else "",
+        "period": period or f"{d_from.isoformat()}..{d_to.isoformat()}",
+        "rate": rate,
+        "currency": proj.currency if proj else "",
+        "human_factor": factor,
+        "rounding_minutes": cfg.rounding_minutes,
+        "days": days,
+        "total_raw_hours": round(sum(d["raw_hours"] for d in days), 2),
+        "total_hours": total_hours,
+        "total_amount": round(total_hours * rate, 2),
+    }
+
+
+def render(rep: dict, fmt: str, detail: str = "day") -> str:
+    if fmt == "json":
+        return json.dumps(rep, indent=2, ensure_ascii=False)
+    if fmt == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        if detail == "session":
+            w.writerow(["date", "start", "end", "hours", "summary", "commits"])
+            for d in rep["days"]:
+                for s in d["sessions"]:
+                    w.writerow([d["date"], s["start"], s["end"], f'{s["hours"]:.2f}', s["summary"],
+                                " ".join(c["sha"] for c in s["commits"])])
+            return buf.getvalue()
+        w.writerow(["date", "weekday", "hours", "raw_hours", "amount", "work", "commits"])
+        for d in rep["days"]:
+            w.writerow([d["date"], d["weekday"], f'{d["hours"]:.2f}', f'{d["raw_hours"]:.2f}',
+                        f'{d["amount"]:.2f}', d["summary"], d["commits"]])
+        w.writerow(["TOTAL", "", f'{rep["total_hours"]:.2f}', f'{rep["total_raw_hours"]:.2f}',
+                    f'{rep["total_amount"]:.2f}', "", ""])
+        return buf.getvalue()
+    # markdown: invoice table, then session detail
+    cur = rep["currency"]
+    lines = [
+        f'# Timesheet — {rep["name"]} ({rep["period"]})',
+        "",
+        f'Client: {rep["client"] or "—"} · Rate: {cur} {rep["rate"]:,.2f}/h'
+        f' · Rounding: {rep["rounding_minutes"]} min/day'
+        + (f' · Factor: {rep["human_factor"]}' if rep["human_factor"] != 1 else ""),
+        "",
+        "| Date | Day | Hours | Amount | Work |",
+        "|---|---|---:|---:|---|",
+    ]
+    for d in rep["days"]:
+        lines.append(f'| {d["date"]} | {d["weekday"]} | {d["hours"]:.2f} | {cur} {d["amount"]:,.2f} | {d["summary"]} |')
+    lines.append(f'| **Total** | | **{rep["total_hours"]:.2f}** | **{cur} {rep["total_amount"]:,.2f}** | |')
+    if detail != "day-only":
+        lines += ["", "## Sessions", ""]
+        for d in rep["days"]:
+            for s in d["sessions"]:
+                lines.append(f'- **{d["date"]} {s["start"]}–{s["end"]}** ({s["hours"]:.2f} h) — {s["summary"]}')
+                for c in s["commits"]:
+                    lines.append(f'  - `{c["sha"][:7]}` {c["repo"]}: {c["subject"]}')
+    return "\n".join(lines) + "\n"
+
+
+def fmt_hm(seconds: int) -> str:
+    h, m = divmod(int(seconds) // 60, 60)
+    return f"{h}h{m:02d}"

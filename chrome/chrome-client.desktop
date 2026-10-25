@@ -1,0 +1,10 @@
+[Desktop Entry]
+# Launches the client's Chrome profile as its own app with a distinct window class,
+# so Hyprland (and uurtjie) can tell it apart from your normal Chrome.
+# Copy to ~/.local/share/applications/, then edit Name, the profile dir and --class.
+Type=Application
+Name=Chrome (Acme)
+Icon=google-chrome
+Exec=sh -c 'exec google-chrome-stable --user-data-dir="$HOME/.config/chrome-acme" --class=chrome-acme "$@"' chrome %U
+StartupWMClass=chrome-acme
+Categories=Network;WebBrowser;

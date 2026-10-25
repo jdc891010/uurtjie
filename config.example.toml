@@ -1,0 +1,87 @@
+# ~/.config/uurtjie/config.toml
+# After editing: `uurtjie reload` (the daemon re-reads this file on SIGHUP).
+
+tick = 5                 # seconds between samples
+sleep_minutes = 5        # no keyboard/mouse/scroll this long = asleep: tracking stops at your last input.
+                         # Shorter pauses never stop anything.
+chunk_minutes = 15       # long sessions on one task are still written as 15-min entries (nothing lost)
+# bridge_minutes = 5     # gaps up to this inside a project count as one session (default = sleep_minutes);
+                         # never bridged across time spent on another project
+rounding_minutes = 6     # reports round each day UP to this many minutes (0 = exact)
+# git_author = "you@example.com"   # whose commits to attach (default: git config user.email per repo)
+
+# Backups: a verified copy of the database every day (and on `uurtjie backup`).
+# Point this at a synced folder to get copies off the machine.
+# backup_dir = "~/Sync/uurtjie-backups"
+backup_keep = 30
+
+# Optional LLM summary per session: receives the session as JSON on stdin, prints one line.
+# Cached, so it only runs once per session. Example with Claude Code in print mode:
+# summary_command = "claude -p 'Summarise this work session for a client timesheet in one line, max 20 words. Use the commits and tasks; no preamble.'"
+default_project = "acme" # used by `uurtjie start` / widget click when no project is given
+
+# Terminals that may host Herdr (Hyprland class or initialClass).
+terminal_classes = ["foot", "Alacritty", "com.mitchellh.ghostty", "kitty", "org.wezfurlong.wezterm"]
+# herdr_socket = "~/.config/herdr/herdr.sock"   # default session
+
+# show_money_in_bar = true         # month-to-date earnings next to the hours in the bar widget
+
+# Calls: an open microphone capture stream counts as a meeting even without keyboard input.
+# meeting_detect = true
+# meeting_min_seconds = 30         # shorter mic use (dictation, voice search) is not a call
+# meeting_grace_seconds = 120      # mic gone this long = call over (bridges mute toggles)
+# meeting_ignore = ["voxtype", "pavucontrol", "speech-dispatcher"]   # apps whose mic use is not a call
+
+[[projects]]
+id = "acme"
+name = "Acme Corp — platform build"
+client = "Acme (Pty) Ltd"
+rate = 950
+currency = "ZAR"
+human_factor = 1.0       # multiply tracked hours before rounding (e.g. 0.7)
+# Shown on invoices:
+# client_address = ["12 Sample Street", "Cape Town, 8001"]
+# client_vat_number = "4123456789"
+# client_reference = "PO-2026-117"     # their purchase order / contract number
+
+# Any Herdr workspace/pane whose cwd is inside one of these counts for this project.
+paths = ["~/code/acme", "~/work/acme-infra"]
+
+# Only count terminal time when Claude Code / Codex is the agent in the focused pane.
+require_agent = false
+agents = ["claude", "codex"]
+
+# The client's Chrome profile. Most reliable: launch that profile with its own
+# class so Hyprland can tell it apart (see README), then match on class.
+[[projects.windows]]
+class = "chrome-acme"
+
+# Alternative / extra rule: match the window title instead (regex).
+# [[projects.windows]]
+# class = "google-chrome"
+# title = "Acme Jira|acme\\.atlassian\\.net"
+
+
+[[projects]]
+id = "internal"
+name = "Internal tools"
+rate = 0
+paths = ["~/code/internal"]
+
+
+# Invoices: `uurtjie invoice create --month 2026-10 --pdf`
+# [invoice]
+# number_format = "INV-{year}-{seq:03d}"     # {year} {seq} {project}
+# payment_terms_days = 14
+# vat_rate = 15                              # percent; 0 = no VAT line
+# dir = "~/Documents/invoices"               # default: ~/.local/share/uurtjie/invoices
+#
+# [invoice.from]
+# name = "Your Name (or company)"
+# address = ["1 Main Road", "Johannesburg, 2000"]
+# email = "you@example.com"
+# phone = ""
+# vat_number = ""
+# reg_number = ""
+# bank = ["Bank: …", "Account name: …", "Account no.: …", "Branch code: …"]
+# footer = "Thank you for your business."
