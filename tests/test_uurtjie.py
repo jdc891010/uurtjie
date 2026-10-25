@@ -251,7 +251,7 @@ class SessionTests(unittest.TestCase):
         self.con = db.connect(Path(TMP) / f"s{time.time_ns()}.db")
         self.cfg = load_cfg()
         self.cfg.sleep_minutes = 5
-        self.cfg.bridge_minutes = None
+        self.cfg.bridge_minutes = 0
 
     def add(self, pid, src, key, a, b, detail=None, note=None):
         db.open_span(self.con, pid, src, key, ts(f"2026-10-12 {a}"), ts(f"2026-10-12 {b}"), detail, note)
@@ -267,14 +267,14 @@ class SessionTests(unittest.TestCase):
         self.add("acme", "terminal", "herdr:w1", "09:41", "10:00", {"workspace_label": "api"})
         self.add("acme", "manual", "timer", "09:50", "10:05", note="call with PM")           # overlaps: no double count
         s = self.sess()
-        self.assertEqual(len(s), 1)
-        self.assertEqual(s[0]["seconds"], 65 * 60)
+        self.assertEqual(len(s), 3)
+        self.assertEqual(sum(x["seconds"] for x in s), 62 * 60)
         self.assertEqual([t["label"] for t in s[0]["tasks"]][:2], ["api", "web"])
         from uurtjie import sessions as S
         S.summarize(s, self.cfg)
-        self.assertIn("call with PM", s[0]["summary"])
-        self.assertIn("AUTH-12 - Jira", s[0]["summary"])
-        self.assertNotIn("Google Chrome", s[0]["summary"])
+        self.assertIn("call with PM", s[-1]["summary"])
+        self.assertIn("AUTH-12 - Jira", s[1]["summary"])
+        self.assertNotIn("Google Chrome", s[1]["summary"])
 
     def test_sleep_gap_splits_and_other_project_blocks_bridge(self):
         self.add("acme", "terminal", "herdr:w1", "09:00", "09:30")
@@ -303,7 +303,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([[c["subject"] for c in s["commits"]] for s in ss],
                          [["Add OAuth callback", "Fix token refresh"], ["Afternoon work"]])
         self.assertIn("commits: Add OAuth callback; Fix token refresh", ss[0]["summary"])
-        self.assertEqual(rep["days"][0]["raw_hours"], round(100 / 60, 2))
+        self.assertAlmostEqual(rep["days"][0]["raw_hours"], 100 / 60)
         for fmt, by in (("md", "day"), ("csv", "session"), ("json", "day")):
             self.assertIn("Fix token refresh", report.render(rep, fmt, by))
 

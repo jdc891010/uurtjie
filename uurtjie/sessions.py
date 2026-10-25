@@ -1,15 +1,7 @@
-"""Post-processing: raw entries -> human work sessions.
+"""Resolve evidence ownership, then group strict human intervals into work sessions.
 
-Raw entries are deliberately fine-grained (15-min chunks, one per Herdr workspace / Chrome
-window / timer). For billing they collapse into sessions per project:
-
-  * overlapping entries (parallel Herdr workspaces, timer running during terminal work) merge
-  * gaps up to `bridge_minutes` (default = sleep_minutes) are counted as work — switching from
-    Herdr to Chrome and back is one session — unless another project was active in that gap
-  * human hours = session length, so parallel tasks never double count
-
-Each session carries its tasks (workspaces, branches, page titles, notes), the git commits
-made during it, and a one-line summary.
+Manual time takes precedence over meetings, then focused windows. Short sampling gaps
+can group sessions without adding time. Configured gap billing is invoice-only.
 """
 from __future__ import annotations
 
@@ -42,61 +34,86 @@ def _overlaps(intervals: list[tuple[int, int]], s: int, e: int) -> bool:
     return any(a < e and b > s for a, b in intervals)
 
 
-def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None = None,
-                   billable_only: bool = False) -> list[dict]:
-    """rows: spans (dicts) of any projects. Returns sessions sorted by start."""
-    pieces: dict[date, list[dict]] = defaultdict(list)
-    for r in rows:
-        s, e = r["start_ts"], r["end_ts"]
-        if clip:
-            s, e = max(s, clip[0]), min(e, clip[1])
-        if e <= s:
+def evidence_segments(rows: list[dict], clip: tuple[int, int] | None = None) -> list[dict]:
+    """Disjoint evidence intervals. Ties use earliest start, then project and entry ID."""
+    priority = {"manual": 3, "meeting": 2, "terminal": 1, "chrome": 1, "window": 1}
+    events = defaultdict(list)
+    ranks = {}
+    for index, row in enumerate(rows):
+        if row["source"] not in priority:
             continue
-        for d, ps, pe in split_by_day(s, e):
-            pieces[d].append({**r, "start_ts": ps, "end_ts": pe})
+        start, end = row["start_ts"], row["end_ts"]
+        ranks[index] = (-priority[row["source"]], start, row["project"], row.get("id") or 0, index)
+        if clip:
+            start, end = max(start, clip[0]), min(end, clip[1])
+        if end > start:
+            events[start].append((index, row))
+            events[end].append((index, None))
+    active, segments = {}, []
+    edges = sorted(events)
+    for start, end in zip(edges, edges[1:]):
+        for index, row in events[start]:
+            if row is None:
+                active.pop(index, None)
+            else:
+                active[index] = row
+        if not active:
+            continue
+        winner = min(active, key=ranks.__getitem__)
+        project = active[winner]["project"]
+        contributing = [{**r, "start_ts": start, "end_ts": end, "credited": i == winner}
+                        for i, r in active.items() if r["project"] == project]
+        segments.append({"project": project, "start": start, "end": end, "rows": contributing,
+                         "billable": all(r.get("billable", 1) for r in contributing)})
+    return segments
 
-    bridge = cfg.bridge_seconds
+
+def _append_interval(intervals: list, start: int, end: int):
+    if intervals and intervals[-1][1] == start:
+        intervals[-1] = (intervals[-1][0], end)
+    else:
+        intervals.append((start, end))
+
+
+def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None = None,
+                   billable_only: bool = False, invoice: bool = False) -> list[dict]:
+    """Group resolved evidence; only invoice billing intervals may include configured gaps."""
+    pieces = defaultdict(list)
+    for segment in evidence_segments(rows, clip):
+        for day, start, end in split_by_day(segment["start"], segment["end"]):
+            pieces[day].append({**segment, "start": start, "end": end,
+                                "rows": [{**r, "start_ts": start, "end_ts": end} for r in segment["rows"]]})
+    bridge = cfg.bridge_seconds if invoice else 0
+    tolerance = max(0, cfg.tick, bridge)
     sessions = []
-    for d, day_rows in sorted(pieces.items()):
-        by_proj: dict[str, list[dict]] = defaultdict(list)
-        for r in day_rows:
-            if not billable_only or r.get("billable", 1):
-                # Explicit non-billable time in this project takes precedence over overlaps.
-                intervals = [(r["start_ts"], r["end_ts"])]
-                if billable_only:
-                    for other in day_rows:
-                        if other["project"] == r["project"] and not other.get("billable", 1):
-                            a, b = other["start_ts"], other["end_ts"]
-                            remaining = []
-                            for lo, hi in intervals:
-                                if a >= hi or b <= lo:
-                                    remaining.append((lo, hi))
-                                else:
-                                    if lo < a:
-                                        remaining.append((lo, a))
-                                    if b < hi:
-                                        remaining.append((b, hi))
-                            intervals = remaining
-                for lo, hi in intervals:
-                    by_proj[r["project"]].append({**r, "start_ts": lo, "end_ts": hi})
-        for pid, prow in by_proj.items():
-            others = [(r["start_ts"], r["end_ts"]) for r in day_rows
-                      if r["project"] != pid or (billable_only and not r.get("billable", 1))]
-            prow.sort(key=lambda r: (r["start_ts"], r["end_ts"]))
-            cur = None
-            for r in prow:
-                if cur and (r["start_ts"] <= cur["end"] or
-                            (r["start_ts"] - cur["end"] <= bridge
-                             and not _overlaps(others, cur["end"], r["start_ts"]))):
-                    cur["end"] = max(cur["end"], r["end_ts"])
-                    cur["rows"].append(r)
-                else:
-                    cur = {"project": pid, "date": d, "start": r["start_ts"], "end": r["end_ts"], "rows": [r]}
-                    sessions.append(cur)
-    for s in sessions:
-        s["seconds"] = s["end"] - s["start"]
-        _describe(s)
-    sessions.sort(key=lambda s: s["start"])
+    for day, segments in sorted(pieces.items()):
+        by_project = defaultdict(list)
+        for segment in segments:
+            if not billable_only or segment["billable"]:
+                by_project[segment["project"]].append(segment)
+        for project, own in by_project.items():
+            blockers = [(s["start"], s["end"]) for s in segments
+                        if s["project"] != project or (billable_only and not s["billable"])]
+            current = None
+            for segment in own:
+                start, end = segment["start"], segment["end"]
+                joins = (current and start - current["end"] <= tolerance
+                         and not _overlaps(blockers, current["end"], start))
+                if not joins:
+                    current = {"project": project, "date": day, "start": start, "end": start,
+                               "rows": [], "intervals": [], "billing_intervals": []}
+                    sessions.append(current)
+                elif 0 < start - current["end"] <= bridge:
+                    _append_interval(current["billing_intervals"], current["end"], start)
+                _append_interval(current["intervals"], start, end)
+                _append_interval(current["billing_intervals"], start, end)
+                current["end"] = end
+                current["rows"].extend(segment["rows"])
+    for session in sessions:
+        session["seconds"] = sum(end - start for start, end in session["intervals"])
+        session["billing_seconds"] = sum(end - start for start, end in session["billing_intervals"])
+        _describe(session)
+    sessions.sort(key=lambda s: (s["start"], s["project"]))
     return sessions
 
 
@@ -106,7 +123,8 @@ def _describe(s: dict):
     notes, repos, sources = [], set(), defaultdict(int)
     for r in s["rows"]:
         det = _detail(r)
-        sources[r["source"]] += r["end_ts"] - r["start_ts"]
+        seconds = r["end_ts"] - r["start_ts"] if r.get("credited", True) else 0
+        sources[r["source"]] += seconds
         if r.get("note") and r["note"] not in notes:
             notes.append(r["note"])
         if r["source"] == "terminal":
@@ -133,12 +151,12 @@ def _describe(s: dict):
             t = tasks.setdefault(f"call:{app}", {"kind": "call", "label": f"call ({app})", "titles": [], "seconds": 0})
         else:
             continue
-        t["seconds"] += r["end_ts"] - r["start_ts"]
+        t["seconds"] += seconds
     s["tasks"] = sorted(tasks.values(), key=lambda t: -t["seconds"])
     s["notes"] = notes
     s["repos"] = sorted(repos)
     s["sources"] = dict(sources)
-    s["entry_ids"] = [r["id"] for r in s["rows"] if r.get("id")]
+    s["entry_ids"] = list(dict.fromkeys(r["id"] for r in s["rows"] if r.get("id")))
 
 
 def _clean_title(t: str) -> str:
@@ -209,7 +227,8 @@ def session_json(s: dict) -> dict:
         "project": s["project"], "date": s["date"].isoformat(),
         "start": datetime.fromtimestamp(s["start"]).strftime("%H:%M"),
         "end": datetime.fromtimestamp(s["end"]).strftime("%H:%M"),
-        "hours": round(s["seconds"] / 3600, 2),
+        "hours": s["seconds"] / 3600, "seconds": s["seconds"],
+        "intervals": s["intervals"], "billing_seconds": s["billing_seconds"],
         "notes": s["notes"],
         "tasks": [{k: v for k, v in t.items() if k != "seconds"} | {"hours": round(t["seconds"] / 3600, 2)}
                   for t in s["tasks"]],

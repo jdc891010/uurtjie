@@ -78,7 +78,7 @@ class Config:
     tick: int = 5                   # seconds between samples
     sleep_minutes: float = 5        # no keyboard/mouse/scroll this long = asleep: tracking stops
     chunk_minutes: int = 15         # long same-task entries are cut into chunks this size
-    bridge_minutes: float | None = None   # gaps up to this join one session (default: sleep_minutes)
+    bridge_minutes: float = 0       # invoice-only gap billing; never affects human time
     merge_gap: int = 120            # same-context samples closer than this extend one entry
     rounding_minutes: int = 6       # per-day rounding on reports (0 = none)
     git_author: str | None = None   # commits to attribute; default `git config user.email`
@@ -104,7 +104,7 @@ class Config:
 
     @property
     def bridge_seconds(self) -> int:
-        return int((self.bridge_minutes if self.bridge_minutes is not None else self.sleep_minutes) * 60)
+        return max(0, int(self.bridge_minutes * 60))
 
     def project(self, pid: str) -> Project | None:
         return next((p for p in self.projects if p.id == pid), None)
