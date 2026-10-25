@@ -55,6 +55,16 @@ Herdr socket ───┘     │                                         (add/s
 
 ## Install
 
+Step-by-step guide (also written for coding agents to follow): **[INSTALL.md](INSTALL.md)**.
+Short version, from the latest release:
+
+```bash
+curl -fsSL https://github.com/jdc891010/uurtjie/releases/latest/download/uurtjie.tar.gz | tar xz
+cd uurtjie && ./install.sh
+```
+
+From a clone or an extracted tarball:
+
 ```bash
 ./install.sh            # copies the app, installs swayidle if missing, enables uurtjie.service,
                         # and installs + enables the Quattro bar widget when available
@@ -286,6 +296,20 @@ rewritten (the original is kept as `bindings.conf.tally-bak`; Lua configs get th
 it stops and asks you to merge by hand. A custom `backup_dir` keeps its path, but its
 `tally-*.db` files are renamed to `uurtjie-*.db`. Afterwards use `uurtjie` where you used `tally`,
 and `UURTJIE_*` for the old `TALLY_*` environment variables.
+
+## Releasing
+
+Merging into the `release` branch publishes a GitHub Release (`.github/workflows/release.yml`):
+tests run, `scripts/build-release.sh` builds `uurtjie-<version>.tar.gz` (plus `uurtjie.tar.gz` for the
+stable "latest" link and `SHA256SUMS`), and the matching `CHANGELOG.md` section becomes the release
+notes. Only the newest 3 releases stay hosted; older ones are deleted, their git tags kept.
+
+1. Bump the version in `uurtjie/__init__.py` **and** `omarchy-plugin/jd.uurtjie/manifest.json`.
+2. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`.
+3. `scripts/build-release.sh --check` (CI runs the same check on every PR).
+4. Open a PR from `main` into `release` and merge it.
+
+Re-merging without a version bump fails instead of overwriting a published release.
 
 ## Troubleshooting
 
