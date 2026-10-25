@@ -80,7 +80,7 @@ class Config:
     chunk_minutes: int = 15         # long same-task entries are cut into chunks this size
     bridge_minutes: float = 0       # invoice-only gap billing; never affects human time
     merge_gap: int = 120            # same-context samples closer than this extend one entry
-    rounding_minutes: int = 6       # per-day rounding on reports (0 = none)
+    rounding_minutes: int = 0       # invoice-only daily rounding (0 = exact)
     git_author: str | None = None   # commits to attribute; default `git config user.email`
     summary_command: list[str] | None = None  # optional: gets session JSON on stdin, prints 1 line
     backup_dir: Path = DATA_DIR / "backups"   # point at a synced folder (Syncthing, Drive) for off-machine copies

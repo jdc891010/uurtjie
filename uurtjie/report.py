@@ -96,8 +96,7 @@ def daily_totals(con, start: int, end: int, project: str | None = None,
 
 
 def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> dict[str, float]:
-    """Billable money in [start, end) per currency, worked out the way invoices do it: per project and
-    day, session hours rounded up to rounding_minutes, hours x rate. Includes a running timer."""
+    """Exact billable human seconds x rate per currency; never apply invoice time adjustments."""
     now = now or int(datetime.now().timestamp())
     per_day: dict = defaultdict(int)
     for s in sessions_between(con, cfg, start, end, billable_only=True, now=now):
@@ -106,7 +105,7 @@ def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> di
     for (pid, _day), secs in per_day.items():
         p = cfg.project(pid)
         if p and p.rate > 0:
-            _, amount = money.bill_day(secs, cfg.rounding_minutes, p.rate)
+            _, amount = money.bill_day(secs, 0, p.rate)
             out[p.currency] += money.decimal(amount)
     return {cur: money.cents(v) for cur, v in out.items() if v}
 

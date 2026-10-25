@@ -4,6 +4,7 @@ import json
 import random
 import tempfile
 import unittest
+from argparse import Namespace
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -164,3 +165,34 @@ class HumanTimeTests(unittest.TestCase):
                     self.assertAlmostEqual(rep["total_raw_hours"] * 3600, rep["total_raw_seconds"])
                     raw += rep["total_raw_seconds"]
                 self.assertEqual(raw, seconds)
+
+    def test_widget_uses_exact_union_and_earnings_even_with_invoice_adjustments(self):
+        self.start = report.local_midnight(date.today()) + 9 * 3600
+        self.cfg.rounding_minutes, self.cfg.bridge_minutes = 6, 5
+        self.add(0, 3600)
+        self.add(600, 1800, "other", "meeting")
+        self.add(900, 1200, source="manual")
+        with patch.object(cli.time, "time", return_value=self.start + 3600), \
+                patch.object(cli, "read_state", return_value=None):
+            status = cli.build_status(self.cfg, self.con)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cli.cmd_status(Namespace(waybar=True, json=False), self.cfg, self.con)
+        self.assertEqual(status["today"]["seconds"], 3600)
+        self.assertEqual(sum(p["seconds"] for p in status["today"]["projects"]), 3600)
+        self.assertAlmostEqual(sum(status["hourly"]["minutes"]) * 60, 3600)
+        self.assertEqual(status["earnings"]["today"], {"ZAR": 125})
+        self.assertIn("Human time", status["tooltip"])
+        self.assertIn("rounding 6 min/day", status["tooltip"])
+        self.assertIn("bridging 5 min", status["tooltip"])
+        self.assertEqual(json.loads(out.getvalue())["tooltip"], status["tooltip"])
+
+    def test_zero_defaults_make_widget_earnings_equal_invoice(self):
+        self.assertEqual((self.cfg.bridge_minutes, self.cfg.rounding_minutes), (0, 0))
+        self.add(0, 61)
+        self.add(66, 127)
+        earned = report.earned(self.con, self.cfg, *report.month_bounds(2026, 9))
+        snap = self.issue()
+        self.assertEqual(earned, {"ZAR": snap["subtotal"]})
+        self.assertAlmostEqual(snap["hours"] * 3600, 122)
+        self.assertIn("Human time, no time rounding", invoice.render_html(snap))

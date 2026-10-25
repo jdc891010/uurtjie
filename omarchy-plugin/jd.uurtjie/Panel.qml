@@ -178,6 +178,11 @@ Panel {
         spacing: Style.space(8)
 
         Line {
+          text: "Human time"
+          font.pixelSize: Style.font.bodySmall
+          opacity: 0.6
+        }
+        Line {
           text: "Today " + (root.s.today ? root.s.today.hm : "0h00")
           font.pixelSize: Style.font.displayLarge
         }
@@ -198,6 +203,12 @@ Panel {
           model: root.s.today ? root.s.today.projects : []
           delegate: Line { text: "  " + modelData.name + "   " + modelData.hm }
         }
+        Line {
+          visible: !!(root.s.invoice_adjustments && root.s.invoice_adjustments.note)
+          text: root.s.invoice_adjustments ? root.s.invoice_adjustments.note : ""
+          font.pixelSize: Style.font.bodySmall
+          opacity: 0.6
+        }
 
         Line {
           id: chartTitle
@@ -205,7 +216,7 @@ Panel {
           text: chart.hovered >= 0
             ? chart.pad(chart.hovered) + ":00–" + chart.pad(chart.hovered + 1) + ":00   "
               + Math.round(chart.minutesAt(chart.hovered)) + " min"
-            : "Today by hour · minutes worked" + (chart.maximumMinutes > 60 ? " (repeated/overlapping hours combined)" : "")
+            : "Human time by hour · minutes worked" + (chart.maximumMinutes > 60 ? " (repeated hour combined)" : "")
           opacity: chart.hovered >= 0 ? 1.0 : 0.6
           font.pixelSize: Style.font.bodySmall
         }

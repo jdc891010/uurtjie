@@ -189,10 +189,11 @@ def build_status(cfg, con) -> dict:
     month0 = local_midnight(today.replace(day=1))
 
     def total(start):
-        return sum(s["seconds"] for s in report.sessions_between(con, cfg, start, now + 1, now=now))
+        return report.union_seconds([interval for s in report.sessions_between(con, cfg, start, now, now=now)
+                                     for interval in s["intervals"]])
 
     by_proj = {}
-    today_sessions = report.sessions_between(con, cfg, t0, now + 1, now=now)
+    today_sessions = report.sessions_between(con, cfg, t0, now, now=now)
     for s in today_sessions:
         by_proj[s["project"]] = by_proj.get(s["project"], 0) + s["seconds"]
     hour_minutes = report.hourly_minutes(today_sessions, today)
@@ -221,9 +222,9 @@ def build_status(cfg, con) -> dict:
         "project": timer["project"], "start": timer["start_ts"], "elapsed": now - timer["start_ts"],
         "hm": fmt_hm(now - timer["start_ts"]), "note": timer["note"]}
 
-    today_total = sum(p["seconds"] for p in projects)
-    month_money = report.earned(con, cfg, month0, now + 1, now)
-    today_money = report.earned(con, cfg, t0, now + 1, now)
+    today_total = report.union_seconds([interval for s in today_sessions for interval in s["intervals"]])
+    month_money = report.earned(con, cfg, month0, now, now)
+    today_money = report.earned(con, cfg, t0, now, now)
     earnings = {"month": month_money, "today": today_money, "month_text": money_label(month_money),
                 "today_text": money_label(today_money), "bar_text": money_label(month_money, cents=False)}
     if timer_d:
@@ -244,7 +245,7 @@ def build_status(cfg, con) -> dict:
         bar_text += f" · {earnings['bar_text']}"
 
     last = last_tracked(con, cfg, now)
-    tip = [f"Today {fmt_hm(today_total)} · week {fmt_hm(total(week0))} · month {fmt_hm(total(month0))}"]
+    tip = [f"Human time · Today {fmt_hm(today_total)} · week {fmt_hm(total(week0))} · month {fmt_hm(total(month0))}"]
     tip += [f"  {p['name']}: {p['hm']}" for p in projects]
     tip += hourly_tip(hourly)
     if month_money:
@@ -264,6 +265,15 @@ def build_status(cfg, con) -> dict:
         tip.append(f"Invoices: {owed['text']}")
     if not (st and st["running"]):
         tip.append("uurtjie is not running")
+    adjustments = []
+    if cfg.rounding_minutes > 0:
+        adjustments.append(f"rounding {cfg.rounding_minutes} min/day")
+    if cfg.bridge_seconds > 0:
+        adjustments.append(f"bridging {cfg.bridge_minutes:g} min")
+    invoice_note = ("Invoice " + "; ".join(adjustments) + ". Invoices may differ from exact widget earnings."
+                    if adjustments else "")
+    if invoice_note:
+        tip.append(invoice_note)
     tip += [f"Warning: {warning}" for warning in cfg.warnings]
 
     return {
@@ -282,6 +292,8 @@ def build_status(cfg, con) -> dict:
         "invoices": owed,
         "earnings": earnings,
         "warnings": cfg.warnings,
+        "invoice_adjustments": {"rounding_minutes": cfg.rounding_minutes,
+                                "bridge_minutes": cfg.bridge_minutes, "note": invoice_note},
     }
 
 

@@ -945,6 +945,7 @@ class EarningsTests(unittest.TestCase):
 
     def test_matches_what_the_invoice_would_charge(self):
         from uurtjie import report as R
+        self.cfg.rounding_minutes = 0
         db.open_span(self.con, "acme", "terminal", "w1", ts("2026-10-05 09:00"), ts("2026-10-05 10:30"))
         db.open_span(self.con, "acme", "chrome", "c", ts("2026-10-06 14:00"), ts("2026-10-06 14:07"))   # 7 min -> 12 min
         db.open_span(self.con, "acme", "manual", "m", ts("2026-10-07 09:00"), ts("2026-10-07 10:00"), billable=False)
@@ -952,7 +953,7 @@ class EarningsTests(unittest.TestCase):
         got = R.earned(self.con, self.cfg, start, end, now=ts("2026-10-31 12:00"))
         rep = R.month_report(self.con, self.cfg, 2026, 10, "acme", with_git=False)
         self.assertEqual(got, {"ZAR": rep["total_amount"]})
-        self.assertEqual(got, {"ZAR": 1700.0})
+        self.assertEqual(got, {"ZAR": 1616.67})
 
     def test_unrated_projects_and_other_months_add_nothing(self):
         from uurtjie import report as R

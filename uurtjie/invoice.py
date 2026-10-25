@@ -202,6 +202,7 @@ def create(con, cfg: Config, project_id: str, d_from: date, d_to: date, *, today
                    "vat_number": proj.client_vat_number, "reference": proj.client_reference},
         "currency": proj.currency, "rate": proj.rate,
         "rounding_minutes": rep["rounding_minutes"], "hours": rep["total_hours"],
+        "bridge_minutes": rep["bridge_minutes"],
         "subtotal": subtotal, "vat_rate": vat, "vat_amount": vat_amount, "total": total,
         "days": rep["days"],
     }
@@ -400,8 +401,16 @@ def render_html(snap: dict, detail: str = "days") -> str:
     meta_rows = "".join(f"<tr><td>{e(k)}</td><td><b>{e(str(v))}</b></td></tr>" for k, v in meta)
 
     desc = f'{e(snap["project"]["name"])} — {e(_period_label(snap))}'
-    item = (f'<tr><td>{desc}<div class="muted">Hours as tracked, rounded up to {snap["rounding_minutes"]} min per day'
-            f'{"; factor " + str(snap["human_factor"]) if snap.get("human_factor", 1) != 1 else ""}</div></td>'
+    if "human_factor" in snap:
+        policy = f'Hours as tracked, rounded up to {snap["rounding_minutes"]} min per day'
+        if snap["human_factor"] != 1:
+            policy += f'; factor {snap["human_factor"]}'
+    else:
+        policy = (f'Human time, rounded up to {snap["rounding_minutes"]} min per day'
+                  if snap["rounding_minutes"] else "Human time, no time rounding")
+        if snap.get("bridge_minutes", 0):
+            policy += f'; invoice gaps up to {snap["bridge_minutes"]:g} min included'
+    item = (f'<tr><td>{desc}<div class="muted">{e(policy)}</div></td>'
             f'<td class="num">{fmt_hours(snap["hours"])}</td><td class="num">{e(fmt_money(cur, snap["rate"]))}</td>'
             f'<td class="num">{e(fmt_money(cur, snap["subtotal"]))}</td></tr>')
 
