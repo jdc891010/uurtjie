@@ -6,12 +6,17 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
       - name: App tests
@@ -28,22 +33,13 @@ jobs:
     env:
       MAX_SURVIVORS: 11
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - name: Install mutmut
         run: python3 -m pip install mutmut==3.8.0 pytest
-      - name: Run mutmut
-        run: mutmut run || true
-      - name: Check survivors
-        run: |
-          mutmut results --all true | awk -F': ' '{print $2}' | sort | uniq -c
-          survived=$(mutmut results | grep -c ': survived' || true)
-          not_checked=$(mutmut results | grep -c ': not checked' || true)
-          echo "survived=$survived (allowed $MAX_SURVIVORS), not checked=$not_checked"
-          if [ "$not_checked" -gt 0 ] || [ "$survived" -gt "$MAX_SURVIVORS" ]; then
-            mutmut results | grep -v ': killed'
-            echo "::error::New surviving mutants: add tests that kill them (mutmut show <name>), or mark a proven-equivalent one in setup.cfg."
-            exit 1
-          fi
+      - name: Run mutations and validate complete results
+        run: python3 scripts/check_mutations.py

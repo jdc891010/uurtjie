@@ -7,14 +7,15 @@ where intended. The previous file is kept as config.toml.bak.
 """
 from __future__ import annotations
 
+import copy
 import json
-import os
 import re
 import tempfile
 import tomllib
 from pathlib import Path
 
 from . import config as config_mod
+from . import storage
 
 
 class ConfigError(Exception):
@@ -30,7 +31,7 @@ SCHEMA: dict[str, dict[str, str]] = {
     "invoice": {"vat_rate": "float", "payment_terms_days": "int", "number_format": "str", "dir": "str"},
     "invoice.from": {"name": "str", "email": "str", "phone": "str", "vat_number": "str", "reg_number": "str",
                      "footer": "str", "address": "list", "bank": "list"},
-    "project": {"name": "str", "client": "str", "rate": "float", "currency": "str", "human_factor": "float",
+    "project": {"name": "str", "client": "str", "rate": "float", "currency": "str",
                 "client_address": "list", "client_vat_number": "str", "client_reference": "str",
                 "require_agent": "bool"},
 }
@@ -44,6 +45,8 @@ def valid_keys() -> list[str]:
 
 def resolve(key: str) -> tuple[str, str, str]:
     """'invoice.from.bank' -> ('invoice.from', 'bank', 'list'); 'rate' -> ('project', 'rate', 'float')."""
+    if key.rsplit(".", 1)[-1] == "human_factor":
+        raise ConfigError("human_factor is no longer used; remove it from your config")
     for prefix, table in (("invoice.from.", "invoice.from"), ("invoice.", "invoice")):
         if key.startswith(prefix):
             name = key[len(prefix):]
@@ -96,37 +99,27 @@ HEADER = re.compile(r"^\s*(\[\[?)\s*([^\]\[]+?)\s*\]\]?\s*(?:#.*)?$")
 
 
 def _headers(lines: list[str]) -> list[tuple[int, bool, str]]:
-    return [(i, m.group(1) == "[[", m.group(2)) for i, ln in enumerate(lines) if (m := HEADER.match(ln))]
+    heads = []
+    i = 0
+    while i < len(lines):
+        if m := HEADER.match(lines[i]):
+            heads.append((i, m.group(1) == "[[", m.group(2)))
+        elif re.match(r"^\s*[A-Za-z0-9_\-\"']+\s*=", lines[i]):
+            i = _value_end(lines, i)
+            continue
+        i += 1
+    return heads
 
 
 def _value_end(lines: list[str], i: int) -> int:
-    """Index after the (possibly multi-line array) value that starts on line i."""
-    depth, in_str, esc = 0, False, False
-    j = i
-    first = True
-    while j < len(lines):
-        text = lines[j].split("=", 1)[1] if first else lines[j]
-        first = False
-        for ch in text:
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-            elif ch == '"':
-                in_str = True
-            elif ch == "#":
-                break
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-        j += 1
-        if depth <= 0:
-            return j
-    return j
+    """Use TOML's parser to delimit a complete assignment, including every string form."""
+    for end in range(i + 1, len(lines) + 1):
+        try:
+            tomllib.loads("\n".join(lines[i:end]))
+        except tomllib.TOMLDecodeError:
+            continue
+        return end
+    raise ConfigError("couldn't safely delimit a setting; edit the file by hand")
 
 
 def _range(lines: list[str], table: str, project: str | None) -> tuple[int, int, int]:
@@ -139,7 +132,7 @@ def _range(lines: list[str], table: str, project: str | None) -> tuple[int, int,
         for n, (i, is_arr, name) in enumerate(heads):
             if is_arr and name == "projects":
                 body = lines[i + 1:ends[n + 1]]
-                if any(re.match(rf'^\s*id\s*=\s*"{re.escape(project or "")}"\s*(#.*)?$', ln) for ln in body):
+                if tomllib.loads("\n".join(body)).get("id") == project:
                     return i + 1, ends[n + 1], i
         raise ConfigError(f"no project with id {project!r} in the config")
     for n, (i, is_arr, name) in enumerate(heads):
@@ -199,6 +192,7 @@ def update_many(path: Path, changes: list[tuple[str, list[str], str | None]]) ->
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"the current config doesn't parse ({e}); fix it first (`uurtjie config edit`)") from None
     done, expect = [], []
+    expected = copy.deepcopy(old_parsed)
     for key, values, project in changes:
         table, name, kind = resolve(key)
         value = coerce(kind, values)
@@ -208,6 +202,13 @@ def update_many(path: Path, changes: list[tuple[str, list[str], str | None]]) ->
         text = edit_text(text, table, name, toml_literal(value), project)
         done.append((key, "" if old is None else str(old), toml_literal(value)))
         expect.append((table, name, project, value))
+        node = expected
+        if table == "project":
+            node = next(p for p in node["projects"] if p.get("id") == project)
+        elif table:
+            for part in table.split("."):
+                node = node.setdefault(part, {})
+        node[name] = value
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -215,6 +216,8 @@ def update_many(path: Path, changes: list[tuple[str, list[str], str | None]]) ->
     for table, name, project, value in expect:
         if _lookup(parsed, table, name, project) != value:
             raise ConfigError("refusing to save: a value didn't land where intended; edit the file by hand")
+    if parsed != expected:
+        raise ConfigError("refusing to save: the edit would change unrelated settings")
     with tempfile.TemporaryDirectory() as tmp:         # the app itself must still load it
         probe = Path(tmp) / "config.toml"
         probe.write_text(text)
@@ -228,9 +231,7 @@ def update_many(path: Path, changes: list[tuple[str, list[str], str | None]]) ->
 
 def write(path: Path, text: str) -> None:
     """Keep the previous file as config.toml.bak, then replace atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    storage.private_dir(path.parent)
     if path.exists():
-        path.with_name(path.name + ".bak").write_text(path.read_text())
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+        storage.atomic_write(path.with_name(path.name + ".bak"), path.read_text())
+    storage.atomic_write(path, text)

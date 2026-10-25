@@ -41,6 +41,7 @@ def make_repo(tmp: Path, version: str = "0.4.1", changelog: str = GOOD) -> Path:
     (tmp / "uurtjie/__init__.py").write_text(f'"""uurtjie."""\n__version__ = "{version}"\n')
     (tmp / "omarchy-plugin/jd.uurtjie").mkdir(parents=True)
     (tmp / cl.MANIFEST).write_text(json.dumps({"id": "jd.uurtjie", "version": version}, indent=2) + "\n")
+    (tmp / cl.PANEL).write_text(f'readonly property string widgetVersion: "{version}"\n')
     (tmp / cl.CHANGELOG).write_text(changelog)
     return tmp
 
@@ -85,6 +86,20 @@ class VersionTests(unittest.TestCase):
             with self.assertRaisesRegex(cl.ReleaseError, "mismatch"):
                 cl.current_version(root)
 
+    def test_manifest_without_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = make_repo(Path(d))
+            (root / cl.MANIFEST).write_text('{"id": "jd.uurtjie"}')
+            self.assertEqual(cl.read_versions(root), ("0.4.1", ""))
+
+    def test_write_version_needs_one_panel_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = make_repo(Path(d))
+            (root / cl.PANEL).write_text("Item {}\n")
+            with self.assertRaisesRegex(cl.ReleaseError, f"exactly one widgetVersion in {cl.PANEL}"):
+                cl.write_version("0.4.2", root)
+            self.assertEqual(cl.read_versions(root), ("0.4.1", "0.4.1"))   # nothing half-written
+
     def test_agreeing_but_invalid_version(self):
         with tempfile.TemporaryDirectory() as d:
             root = make_repo(Path(d), version="0.4")
@@ -127,7 +142,7 @@ class VersionTests(unittest.TestCase):
 class ParseTests(unittest.TestCase):
     def test_sections(self):
         pre, secs = cl.parse_changelog(GOOD)
-        self.assertIn("Intro text.", pre)
+        self.assertEqual(pre, "# Changelog\n\nIntro text.\n")
         self.assertEqual([(s.version, s.date) for s in secs], [("0.4.1", "2026-10-25"), ("0.3.0", "2026-10-21")])
         self.assertEqual(secs[0].line, 5)
         self.assertTrue(secs[0].body.startswith("### Added"))
@@ -135,7 +150,12 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(secs[1].body, "### Changed\n- Renamed from tally.")
 
     def test_no_sections(self):
-        self.assertEqual(cl.parse_changelog("# Changelog\n")[1], [])
+        self.assertEqual(cl.parse_changelog("# Changelog\n"), ("# Changelog", []))
+
+    def test_body_keeps_inner_whitespace(self):
+        # Only blank lines around a body are dropped: indentation and a trailing "X" are content.
+        _, secs = cl.parse_changelog("## [1.0.0] - 2026-01-01\n\n  - a\n- fix X\n## [0.9.0] - 2026-01-01\n- y\n")
+        self.assertEqual([s.body for s in secs], ["  - a\n- fix X", "- y"])
 
     def test_heading_without_date(self):
         _, secs = cl.parse_changelog("## [1.0.0]\n- x\n")

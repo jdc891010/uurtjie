@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 # Thin launcher: runs the uurtjie package from its install dir with the system python.
 UURTJIE_HOME="${UURTJIE_HOME:-$HOME/.local/share/uurtjie/app}"
-exec env PYTHONPATH="$UURTJIE_HOME${PYTHONPATH:+:$PYTHONPATH}" python3 -m uurtjie "$@"
+exec env PYTHONPATH="$UURTJIE_HOME" python3 -P -m uurtjie "$@"

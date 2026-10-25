@@ -4,11 +4,11 @@
 Used by scripts/build-release.sh, scripts/release-notes.sh, CI and the `release-notes` Claude skill
 (.claude/skills/release-notes/SKILL.md). Standard library only, like the app.
 
-    changelog.py version                         current version (fails if the two files disagree)
+    changelog.py version                         current version (fails if app/widget versions disagree)
     changelog.py check [--version X.Y.Z]         CHANGELOG.md is well formed and has the current version
     changelog.py notes X.Y.Z                     one section's body (the GitHub release notes)
     changelog.py commits [--since vX.Y.Z]        commits since the last release tag, as JSON
-    changelog.py bump major|minor|patch|X.Y.Z    write the new version to both files
+    changelog.py bump major|minor|patch|X.Y.Z    write the app, manifest and panel versions
     changelog.py add X.Y.Z --notes-file F [--date YYYY-MM-DD]   insert a section at the top
 
 Versions are strict X.Y.Z: they end up in git tags, file names and shell commands in the release
@@ -31,11 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 CHANGELOG = "CHANGELOG.md"
 INIT = "uurtjie/__init__.py"
 MANIFEST = "omarchy-plugin/jd.uurtjie/manifest.json"
+PANEL = "omarchy-plugin/jd.uurtjie/Panel.qml"
 
 # ASCII digits only (\d also matches e.g. Arabic-Indic digits), used with fullmatch ($ allows a trailing \n).
 VERSION_RE = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})")
 HEADING_RE = re.compile(r"^## \[(?P<version>[^\]]*)\](?: - (?P<date>\S+))?\s*$")
 INIT_RE = re.compile(r'^__version__ = "([^"]*)"$', re.M)
+PANEL_RE = re.compile(r'(readonly property string widgetVersion:\s*)"([^"]*)"')
 CATEGORIES = ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Packaging")
 
 # Things that must never reach public release notes.
@@ -91,6 +93,9 @@ def current_version(root: Path = ROOT) -> str:
     if init_v != manifest_v:
         raise ReleaseError(f"version mismatch: {INIT} says {init_v}, {MANIFEST} says {manifest_v}")
     parse_version(init_v)
+    panel = PANEL_RE.search((root / PANEL).read_text())
+    if not panel or panel[2] != init_v:
+        raise ReleaseError(f"version mismatch: {PANEL} must agree with {INIT}")
     return init_v
 
 
@@ -108,8 +113,13 @@ def write_version(new: str, root: Path = ROOT) -> None:
     mnew, n = re.subn(r'("version"\s*:\s*)"[^"]*"', rf'\g<1>"{new}"', mtext, count=1)
     if n != 1 or json.loads(mnew) != data:
         raise ReleaseError(f"couldn't update the version in {MANIFEST}")
+    panel = root / PANEL
+    pnew, count = PANEL_RE.subn(lambda m: f'{m[1]}"{new}"', panel.read_text())
+    if count != 1:
+        raise ReleaseError(f"expected exactly one widgetVersion in {PANEL}")
     atomic_write(init, text)
     atomic_write(manifest, mnew)
+    atomic_write(panel, pnew)
 
 
 # --------------------------------------------------------------------------- changelog
@@ -125,27 +135,17 @@ class Section:
 def parse_changelog(text: str) -> tuple[str, list[Section]]:
     """-> (preamble, sections in file order)."""
     lines = text.splitlines()
-    preamble: list[str] = []
-    sections: list[Section] = []
-    cur: Section | None = None
-    buf: list[str] = []
+    heads = []                                   # (1-based line, heading match)
     for i, line in enumerate(lines, 1):
-        m = HEADING_RE.match(line) if line.startswith("## [") else None
-        if line.startswith("## [") and not m:
-            raise ReleaseError(f"{CHANGELOG}:{i}: malformed heading {line!r}, expected '## [X.Y.Z] - YYYY-MM-DD'")
-        if m:
-            if cur:
-                cur.body = "\n".join(buf).strip("\n")
-                sections.append(cur)
-            cur, buf = Section(m["version"], m["date"], "", i), []
-        elif cur:
-            buf.append(line)
-        else:
-            preamble.append(line)
-    if cur:
-        cur.body = "\n".join(buf).strip("\n")
-        sections.append(cur)
-    return "\n".join(preamble), sections
+        if line.startswith("## ["):
+            m = HEADING_RE.match(line)
+            if not m:
+                raise ReleaseError(f"{CHANGELOG}:{i}: malformed heading {line!r}, expected '## [X.Y.Z] - YYYY-MM-DD'")
+            heads.append((i, m))
+    ends = [i - 1 for i, _ in heads[1:]] + [None]   # each body runs up to the next heading
+    sections = [Section(m["version"], m["date"], "\n".join(lines[i:end]).strip("\n"), i)
+                for (i, m), end in zip(heads, ends)]
+    return "\n".join(lines[:heads[0][0] - 1] if heads else lines), sections
 
 
 def parse_date(s: str) -> date:

@@ -1,19 +1,26 @@
-# uurtjie
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-wordmark-dark.svg">
+    <img src="docs/images/logo-wordmark.svg" alt="uurtjie, the little hour" width="420">
+  </picture>
+</h1>
 
-[![ci](https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml/badge.svg)](https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/jdc891010/uurtjie)](https://github.com/jdc891010/uurtjie/releases/latest)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<p align="center">
+  <a href="https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml"><img src="https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/jdc891010/uurtjie/releases/latest"><img src="https://img.shields.io/github/v/release/jdc891010/uurtjie" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license: MIT"></a>
+</p>
 
 **Client time tracking for Hyprland / Omarchy that only counts the time you are actually working on a client.**
 That means time at the keyboard in the client's project folders (terminals, Herdr, Claude Code, Codex), in the
 client's browser windows, and in calls. It runs in the background, shows today's hours and earnings in your bar,
 and turns the month into a timesheet and an invoice.
 
-*uurtjie* is Afrikaans for "little hour".
+*uurtjie* is Afrikaans for "little hour". Why it exists, in plain words: [The little hour](docs/articles/the-little-hour.md).
 
 <p align="center"><img src="docs/images/widget.svg" alt="The uurtjie bar item showing today's hours, the tracked project and this month's earnings, and the panel below it with today, week and month totals, earnings, time per project, an hour-by-hour chart, what is being tracked now, and buttons" width="540"></p>
 
-<sub>All images in this README are generated from the real code with made-up demo data (`scripts/screenshots.py`).
+<sub>All screenshots in this README are generated from the real code with made-up demo data (`scripts/screenshots.py`).
 The bar and panel use Omarchy's theme colours; the icons are Nerd Font glyphs.</sub>
 
 ## Contents
@@ -45,8 +52,8 @@ The bar and panel use Omarchy's theme colours; the icons are Nerd Font glyphs.</
 - **Calls count without typing.** If a client's window has the microphone open, that time is recorded as a meeting.
 - **A bar item** with today's hours and month-to-date earnings. Click it for the panel above, and right-click to
   start a manual timer for work away from the computer.
-- **Honest numbers.** Parallel work (two terminals, a call while typing) is never double counted. Each day is
-  rounded up once (default 6 minutes), the same way on the widget, the timesheet and the invoice.
+- **Honest numbers.** Each second belongs to one project, even across clients. The widget shows exact human time.
+  Invoice rounding and gap billing are optional and both default to zero.
 - **Invoices** as HTML/PDF with a timesheet page, numbered, with VAT, payments and overdue tracking. Invoiced
   periods are locked, so the hours can't change after you've sent them.
 - **Local and simple:** one SQLite file, Python standard library only, no account, no cloud.
@@ -69,22 +76,37 @@ Every 5 seconds the daemon (`uurtjie daemon`, run by `uurtjie.service`) takes on
    - Anything else → not tracked.
 4. **Is a call open?** A microphone stream from a project's window counts as a `meeting`, even while you're idle.
 
-### Entries, sessions and what gets billed
+### What counts as human time
 
-<p align="center"><img src="docs/images/timeline.svg" alt="Timeline of a morning: terminal work, a short switch to the client's Jira, 35 minutes away, a call without typing, personal Slack, then more terminal work; the entries written for each; and the three sessions billed, 1h25, 0h40 and 0h45" width="900"></p>
+Human time is the union of recorded evidence: focused project work while active, microphone-confirmed meetings,
+manual timers, and manual entries. Idle focus time is trimmed to the last input. Untracked windows and gaps with
+no evidence contribute zero seconds. Sampling uses local timestamps, with days split at local midnight.
 
-The daemon writes fine-grained **entries**: one per Herdr workspace, browser window, call or timer. Long
-stretches are cut into `chunk_minutes` (15) pieces, so a crash loses at most a few seconds.
+Every overlapping second belongs to exactly one project. Manual entries and timers take precedence over meetings;
+meetings take precedence over focused windows. For equal precedence, the earlier starting entry wins, then project
+ID and entry ID break ties. This applies before filtering billable time, so non-billable work cannot transfer
+its seconds to another client's invoice. Non-billable work still counts as human time, but earns no money.
 
-Reports never bill raw entries. They're merged into **sessions** per project:
+<p align="center"><img src="docs/images/timeline.svg" alt="A morning of terminal work, an uncounted switch, browser work, idle time, a call and more terminal work, with four strict human-time sessions" width="900"></p>
 
-- Overlapping entries (parallel Herdr workspaces, a call while typing, a timer during terminal work) merge into one.
-- Gaps up to `bridge_minutes` (default: `sleep_minutes`) count as work, so terminal → Chrome → terminal is one
-  session. A gap is never bridged if you worked on another project in it.
-- Each session lists its tasks (workspaces, branches, page titles, notes) and the git commits you made during it,
-  and gets a one-line summary. Set `summary_command` to have an LLM write that summary (cached per session).
+The daemon writes fine-grained **entries**. Long stretches are split into `chunk_minutes` (15) pieces; context
+switches close the previous entry and open the next at the same sample boundary. Entries become **sessions**:
 
-<p align="center"><img src="docs/images/cli-status.svg" alt="Terminal output of uurtjie status, uurtjie today and uurtjie sessions for a demo day: today's total, time per project, an hour-by-hour sparkline, earnings and three sessions with their tasks" width="900"></p>
+- Overlapping evidence for one project merges after cross-project ownership is resolved.
+- A gap no longer than one sample (`tick`, 5 seconds by default) may join the displayed session, but adds no seconds.
+  Session hours are the sum of covered intervals, not the elapsed time between the displayed start and end.
+- `bridge_minutes` defaults to **0**. An explicit nonzero value can add gaps to invoice billing only, never the
+  widget's human time or earnings. Gaps containing another project's evidence or non-billable work are not billed.
+- Each session lists its tasks, branches, page titles, notes and git commits, and has a one-line summary.
+  `summary_command` can supply that summary (cached per session).
+
+The widget's today/week/month totals and hourly chart use the same strict intervals. Earnings use exact billable
+seconds times the rate, with decimal rounding to cents per project and day. With the default **0** invoice time
+rounding and bridging, widget earnings match the invoice subtotal. If you configure either invoice adjustment,
+the tooltip and panel explain that invoice amounts may differ. Report JSON exposes `raw_seconds` and
+`total_raw_seconds` as human time; `billing_seconds` and billed hours describe the invoice calculation.
+
+<p align="center"><img src="docs/images/cli-status.svg" alt="Terminal output of uurtjie status, uurtjie today and uurtjie sessions for a demo day: today's total, time per project, an hour-by-hour sparkline, earnings and strict sessions with their tasks" width="900"></p>
 
 ## Requirements
 
@@ -142,6 +164,9 @@ under a project path counts. With Herdr, uurtjie asks Herdr's socket (`~/.config
 `herdr_socket` for a named session) which workspace and pane is focused, so each workspace becomes its own entry,
 with the agent recorded. Check what it sees with `herdr pane list`. To bill terminal time **only while Claude Code
 or Codex runs** in the focused pane, set `require_agent = true` on the project (`agents` lists which agents count).
+That restriction requires Herdr's agent information; plain terminals for that project are not counted.
+Plain-terminal tracking uses the terminal's foreground process group. If a terminal server exposes multiple
+PTYs through one window PID and the focused PTY cannot be identified, it is left untracked.
 
 ### The client's browser profile
 
@@ -171,8 +196,8 @@ The bar shows today's hours, the project being tracked, and money earned so far 
 | Right | starts the manual timer, or opens the stop popup if one is running |
 | Middle | live log (`journalctl --user -u uurtjie -f`) |
 
-Earnings are calculated exactly like an invoice (per day: session hours × `human_factor`, rounded up to
-`rounding_minutes`, × `rate`), so they match what you will bill. Hide the amount from the bar with
+Earnings use exact billable human seconds times the rate, rounded only to cents. They match the invoice subtotal
+with the default zero time rounding and zero bridging. Configured invoice adjustments never change widget earnings. Hide the amount from the bar with
 `uurtjie config set show_money_in_bar false`. The panel and tooltip keep it. Without Quattro, use
 `waybar/uurtjie.jsonc` (`uurtjie status --waybar`).
 
@@ -213,6 +238,9 @@ uurtjie undo                              # remove the last manual entry
 ```
 
 Quick-add tokens can be in any order. A unique prefix of a project id is enough (`acme-i` for `acme-infra`).
+Overnight ranges use the next local calendar date, including daylight-saving changes. Ambiguous or
+nonexistent local clock times are rejected; use `add` with a full ISO datetime and UTC offset to resolve them.
+Edits must leave the end after the start; use full dates when changing which day an entry ends on.
 
 ## Calls and meetings
 
@@ -222,7 +250,8 @@ Tracking stops after `sleep_minutes` without input, which would drop a 40-minute
 
 - It is matched through the window rules. A dedicated client browser counts as soon as you join a call in it,
   whichever window is focused. A browser shared with personal windows only counts while the project's window is focused.
-- A microphone that goes quiet for less than `meeting_grace_seconds` (120, for example while muting) is the same call.
+- After a call is confirmed, `meeting_grace_seconds` (120) retains its identity through a brief mute. Time with
+  no microphone evidence is not added to human time. Initial confirmation requires sustained microphone use.
 - Screen recorders and screen sharing (which capture your speakers) and dictation (`voxtype`) don't count. Add other
   apps to `meeting_ignore`. Turn the feature off with `meeting_detect = false`.
 - Calls overlap your normal entries, and sessions never double count, so a call while typing is billed once.
@@ -265,9 +294,15 @@ uurtjie invoice render 001 --pdf --detail sessions # rewrite the files from the 
   another invoice, is refused.
 - **Frozen figures.** Hours, rate, VAT and the daily breakdown are stored with the invoice, so later config changes
   never alter one you've sent. A database backup is taken before each issue.
-- **Money.** Per day: session hours × `human_factor`, rounded up to `rounding_minutes`. Subtotal = hours × rate, plus
+- **Money.** Per day: billable human seconds, optional invoice gap billing and optional `rounding_minutes`, then rate; plus
   VAT = subtotal × `vat_rate` %. Part payments are fine. The state goes `issued` → `sent` → `part-paid` / `overdue` →
   `paid`, and outstanding amounts show in the panel and tooltip.
+  Time stays precise through the rate calculation, including with rounding disabled. Each day's amount is
+  rounded to cents using decimal half-up rounding; the subtotal is the sum of those amounts. VAT is rounded
+  to cents with the same rule. Displayed hours may be abbreviated; they are not used to calculate money.
+- **Timers and locks.** Stopping a timer also respects issued periods. Resolve a forgotten timer before invoicing;
+  use `stop --force` only for an intentional correction, or void and reissue the invoice. `--at` cannot precede
+  the timer's start. If entries change while invoice summaries are being prepared, creation asks you to retry.
 - **What the client sees.** Page 1 is the invoice, page 2 the timesheet (decimal hours per day). Window titles and work
   summaries are only included with `--detail sessions`, so nothing from your screen leaks by default.
 - **Files** go to `[invoice] dir` (default `~/.local/share/uurtjie/invoices`). `--pdf` prints with headless
@@ -284,8 +319,8 @@ after `config set`; after a manual edit run `uurtjie reload`.
 |---|---|---|
 | `default_project` | none | project for the timer and quick-add when nothing else decides |
 | `sleep_minutes` | 5 | no input this long = away; the entry is cut back to your last input |
-| `bridge_minutes` | = `sleep_minutes` | gaps up to this inside one project join one session |
-| `rounding_minutes` | 6 | each day is rounded **up** to this (0 = exact) |
+| `bridge_minutes` | 0 | invoice-only gap billing; human time never includes gaps |
+| `rounding_minutes` | 0 | invoice-only daily time rounding, **up** to this step (0 = exact) |
 | `chunk_minutes` | 15 | long entries are written in pieces of this size |
 | `tick` | 5 | seconds between samples |
 | `terminal_classes` | foot, Alacritty, ghostty, kitty, WezTerm | window classes treated as terminals |
@@ -302,7 +337,6 @@ after `config set`; after a manual edit run `uurtjie reload`.
 |---|---|---|
 | `id`, `name`, `client` | | identifier (used on the CLI), display name, client name on invoices |
 | `rate`, `currency` | 0, ZAR | hourly rate; earnings and invoices need a rate |
-| `human_factor` | 1.0 | multiply tracked hours before rounding (e.g. 0.8) |
 | `paths` | [] | folders whose terminal work counts (longest match wins) |
 | `[[projects.windows]]` | | `class` (exact) and/or `title` (regex) of windows that count |
 | `require_agent`, `agents` | false, [claude, codex] | only count terminal time while one of these agents runs |
@@ -328,7 +362,7 @@ unit) logs every sample.
 | `uurtjie sessions [--date D] [--days N] [--project P] [--json]` | sessions with tasks, commits and summaries |
 | `uurtjie log [--date D] [--days N] [--project P] [--json]` | raw entries with ids |
 | `uurtjie add`, `uurtjie quick` / `q`, `uurtjie edit`, `uurtjie rm`, `uurtjie undo` | manual entries and corrections |
-| `uurtjie start [P] [-n note]`, `uurtjie stop [--discard]`, `uurtjie toggle`, `uurtjie timer` | manual timer |
+| `uurtjie start [P] [-n note]`, `uurtjie stop [--discard] [--force]`, `uurtjie toggle`, `uurtjie timer` | manual timer |
 | `uurtjie report [--month M] [--project P] [-f md\|csv\|json] [--by day\|session\|day-only] [-o file] [--record]` | timesheets |
 | `uurtjie invoice create\|list\|show\|sent\|paid\|void\|unbilled\|render` | invoices and payments |
 | `uurtjie export [--project P] [--to DIR]` | every entry as CSV |
@@ -349,6 +383,10 @@ Every command has `--help`. `--date` accepts `YYYY-MM-DD`, `today` and `yesterda
   and details such as the Herdr workspace, folder, git branch, agent and window title. Timers, invoices (with a frozen
   copy of their figures) and payments are stored too. Untracked windows are never written to the database.
 - **Live state** (what is being tracked right now) is in `$XDG_RUNTIME_DIR/uurtjie/state.json`.
+  Without that variable, it uses `/run/user/<uid>/uurtjie` when available, otherwise a private directory under
+  the data directory. A shared or incorrectly owned runtime root is rejected.
+- **Permissions:** data/config directories are private (`0700`), and database, backup, config, and newly written
+  invoice/export files are `0600`. Keep any synced backup destination private to your account too.
 - **Backups:** the daemon writes a verified copy of the database once a day and keeps `backup_keep` (30). Point
   `backup_dir` at a synced folder for off-machine copies. `uurtjie backup --now` makes an extra copy, for example
   before month-end. To restore: `systemctl --user stop uurtjie`, copy a backup over the database, then
@@ -368,6 +406,13 @@ Every command has `--help`. `--date` accepts `YYYY-MM-DD`, `today` and `yesterda
 
 Download a newer release and run its `./install.sh` (see [INSTALL.md](INSTALL.md#upgrade)). Your config, database and
 backups are kept. The panel tells you when the bar widget is older than the app.
+
+**From 0.4.x to 0.5.0:** human hours may drop because gaps and cross-project overlaps no longer inflate
+measured time. `human_factor` is no longer used; remove it from your config to clear the warning. Existing explicit
+`bridge_minutes` and `rounding_minutes` values now affect invoices only. To adopt the new exact defaults, run
+`uurtjie config set bridge_minutes 0` and `uurtjie config set rounding_minutes 0`. Removing a factor below one
+can increase a new invoice compared with an old discounted calculation. Already-issued invoices remain frozen,
+including their original factor notes; historical reports are recalculated from evidence under the new rules.
 
 **From tally (≤ 0.2.x):** uurtjie is tally's new name. `install.sh` migrates in place: database, backups and config move
 to `~/.local/share/uurtjie` and `~/.config/uurtjie`, the old `tally` service, commands and bar widget are removed, and
@@ -405,7 +450,8 @@ the last tag, proposes the version, writes the changelog section and validates i
 `scripts/changelog.py`:
 
 1. `python3 scripts/changelog.py commits`: what changed since the last release (JSON).
-2. `python3 scripts/changelog.py bump patch|minor|major`: updates `uurtjie/__init__.py` **and** the widget manifest.
+2. `python3 scripts/changelog.py bump patch|minor|major`: updates `uurtjie/__init__.py`, the widget manifest,
+   and the panel's version together.
 3. `python3 scripts/changelog.py add X.Y.Z --notes-file notes.md`: inserts the dated section (refuses malformed notes,
    secrets and absolute home paths).
 4. `scripts/build-release.sh --check` (CI runs the same check on every PR).

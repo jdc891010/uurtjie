@@ -10,7 +10,8 @@ if [[ "${1:-}" != "--prompt" ]]; then
   exec xdg-terminal-exec --app-id=uurtjie.quick --title="Uurtjie quick add" -e "$0" --prompt
 fi
 
-mkdir -p "$(dirname "$HIST")"; touch "$HIST"
+umask 077
+mkdir -p "$(dirname "$HIST")"; touch "$HIST"; chmod 600 "$HIST"
 HISTFILE="$HIST"; history -r
 
 printf '\e[1mUurtjie — quick add\e[0m   today: %s\n' "$("$UURTJIE" status --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["today"]["hm"])' 2>/dev/null)"
@@ -20,9 +21,9 @@ printf '\e[2me.g.  acme 1h30 call with PM · 09:00-10:30 standup · y 2h code re
 while true; do
   read -e -r -p "› " line || exit 0
   [[ -z "$line" ]] && exit 0
-  if preview=$("$UURTJIE" quick --dry-run $line 2>&1); then
+  if preview=$("$UURTJIE" quick --dry-run -- "$line" 2>&1); then
     history -s "$line"; history -w
-    out=$("$UURTJIE" quick $line 2>&1)
+    out=$("$UURTJIE" quick -- "$line" 2>&1)
     notify-send -a uurtjie -i appointment-new "Uurtjie" "$out" 2>/dev/null
     printf '\e[32m✓ %s\e[0m\n' "$out"
     sleep 0.8; exit 0

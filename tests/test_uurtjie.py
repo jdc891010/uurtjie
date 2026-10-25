@@ -251,7 +251,7 @@ class SessionTests(unittest.TestCase):
         self.con = db.connect(Path(TMP) / f"s{time.time_ns()}.db")
         self.cfg = load_cfg()
         self.cfg.sleep_minutes = 5
-        self.cfg.bridge_minutes = None
+        self.cfg.bridge_minutes = 0
 
     def add(self, pid, src, key, a, b, detail=None, note=None):
         db.open_span(self.con, pid, src, key, ts(f"2026-10-12 {a}"), ts(f"2026-10-12 {b}"), detail, note)
@@ -267,14 +267,14 @@ class SessionTests(unittest.TestCase):
         self.add("acme", "terminal", "herdr:w1", "09:41", "10:00", {"workspace_label": "api"})
         self.add("acme", "manual", "timer", "09:50", "10:05", note="call with PM")           # overlaps: no double count
         s = self.sess()
-        self.assertEqual(len(s), 1)
-        self.assertEqual(s[0]["seconds"], 65 * 60)
+        self.assertEqual(len(s), 3)
+        self.assertEqual(sum(x["seconds"] for x in s), 62 * 60)
         self.assertEqual([t["label"] for t in s[0]["tasks"]][:2], ["api", "web"])
         from uurtjie import sessions as S
         S.summarize(s, self.cfg)
-        self.assertIn("call with PM", s[0]["summary"])
-        self.assertIn("AUTH-12 - Jira", s[0]["summary"])
-        self.assertNotIn("Google Chrome", s[0]["summary"])
+        self.assertIn("call with PM", s[-1]["summary"])
+        self.assertIn("AUTH-12 - Jira", s[1]["summary"])
+        self.assertNotIn("Google Chrome", s[1]["summary"])
 
     def test_sleep_gap_splits_and_other_project_blocks_bridge(self):
         self.add("acme", "terminal", "herdr:w1", "09:00", "09:30")
@@ -303,7 +303,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([[c["subject"] for c in s["commits"]] for s in ss],
                          [["Add OAuth callback", "Fix token refresh"], ["Afternoon work"]])
         self.assertIn("commits: Add OAuth callback; Fix token refresh", ss[0]["summary"])
-        self.assertEqual(rep["days"][0]["raw_hours"], round(100 / 60, 2))
+        self.assertAlmostEqual(rep["days"][0]["raw_hours"], 100 / 60)
         for fmt, by in (("md", "day"), ("csv", "session"), ("json", "day")):
             self.assertIn("Fix token refresh", report.render(rep, fmt, by))
 
@@ -533,13 +533,14 @@ class CallTests(unittest.TestCase):
         self.audio.streams = [CHROME_STREAM]                 # unmuted: same call
         self.tick(t + 130)
         c = self.calls()
-        self.assertEqual(len(c), 1)
-        self.assertEqual((c[0]["project"], c[0]["start_ts"], c[0]["end_ts"]), ("acme", t, t + 130))
+        self.assertEqual(len(c), 2)
+        self.assertEqual((c[0]["project"], c[0]["start_ts"], c[0]["end_ts"]), ("acme", t, t + 65))
+        self.assertEqual((c[1]["start_ts"], c[1]["end_ts"]), (t + 130, t + 130))
         self.assertEqual(json.loads(c[0]["detail"])["app"], "Google Chrome")
         self.audio.streams = []                              # hang up: over after the grace period
         for i in range(135, 300, 5):
             self.tick(t + i)
-        self.assertEqual(self.calls()[0]["end_ts"], t + 130)
+        self.assertEqual(self.calls()[-1]["end_ts"], t + 135)
         self.assertIsNone(json.loads((Path(TMP) / "uurtjie" / "state.json").read_text())["meeting"])
 
     def test_brief_mic_use_is_not_a_call(self):
@@ -945,6 +946,7 @@ class EarningsTests(unittest.TestCase):
 
     def test_matches_what_the_invoice_would_charge(self):
         from uurtjie import report as R
+        self.cfg.rounding_minutes = 0
         db.open_span(self.con, "acme", "terminal", "w1", ts("2026-10-05 09:00"), ts("2026-10-05 10:30"))
         db.open_span(self.con, "acme", "chrome", "c", ts("2026-10-06 14:00"), ts("2026-10-06 14:07"))   # 7 min -> 12 min
         db.open_span(self.con, "acme", "manual", "m", ts("2026-10-07 09:00"), ts("2026-10-07 10:00"), billable=False)
@@ -952,7 +954,7 @@ class EarningsTests(unittest.TestCase):
         got = R.earned(self.con, self.cfg, start, end, now=ts("2026-10-31 12:00"))
         rep = R.month_report(self.con, self.cfg, 2026, 10, "acme", with_git=False)
         self.assertEqual(got, {"ZAR": rep["total_amount"]})
-        self.assertEqual(got, {"ZAR": 1700.0})
+        self.assertEqual(got, {"ZAR": 1616.67})
 
     def test_unrated_projects_and_other_months_add_nothing(self):
         from uurtjie import report as R

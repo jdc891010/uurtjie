@@ -9,7 +9,10 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("UURTJIE_CONFIG", "~/.config/uurtjie/config.toml")).expanduser()
 DATA_DIR = Path(os.environ.get("UURTJIE_DATA", "~/.local/share/uurtjie")).expanduser()
-RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "uurtjie"
+_runtime_root = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+if not os.environ.get("XDG_RUNTIME_DIR") and not _runtime_root.exists():
+    _runtime_root = DATA_DIR / "run"
+RUNTIME_DIR = _runtime_root / "uurtjie"
 
 DEFAULT_TERMINALS = [
     "Alacritty", "alacritty",
@@ -41,7 +44,6 @@ class Project:
     client: str = ""
     rate: float = 0.0
     currency: str = "ZAR"
-    human_factor: float = 1.0
     paths: list[Path] = field(default_factory=list)
     windows: list[WindowRule] = field(default_factory=list)
     require_agent: bool = False          # only count terminal time when an agent runs in the pane
@@ -76,9 +78,9 @@ class Config:
     tick: int = 5                   # seconds between samples
     sleep_minutes: float = 5        # no keyboard/mouse/scroll this long = asleep: tracking stops
     chunk_minutes: int = 15         # long same-task entries are cut into chunks this size
-    bridge_minutes: float | None = None   # gaps up to this join one session (default: sleep_minutes)
+    bridge_minutes: float = 0       # invoice-only gap billing; never affects human time
     merge_gap: int = 120            # same-context samples closer than this extend one entry
-    rounding_minutes: int = 6       # per-day rounding on reports (0 = none)
+    rounding_minutes: int = 0       # invoice-only daily rounding (0 = exact)
     git_author: str | None = None   # commits to attribute; default `git config user.email`
     summary_command: list[str] | None = None  # optional: gets session JSON on stdin, prints 1 line
     backup_dir: Path = DATA_DIR / "backups"   # point at a synced folder (Syncthing, Drive) for off-machine copies
@@ -87,6 +89,7 @@ class Config:
     herdr_socket: Path = Path("~/.config/herdr/herdr.sock").expanduser()
     default_project: str | None = None
     projects: list[Project] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     # Calls: a microphone capture stream open this long counts as a meeting, even with no keyboard input.
     show_money_in_bar: bool = True        # month-to-date earnings next to the hours in the bar widget
     meeting_detect: bool = True
@@ -101,7 +104,7 @@ class Config:
 
     @property
     def bridge_seconds(self) -> int:
-        return int((self.bridge_minutes if self.bridge_minutes is not None else self.sleep_minutes) * 60)
+        return max(0, int(self.bridge_minutes * 60))
 
     def project(self, pid: str) -> Project | None:
         return next((p for p in self.projects if p.id == pid), None)
@@ -149,6 +152,8 @@ def load(path: Path | None = None) -> Config:
         return Config()
     raw = tomllib.loads(path.read_text())
     cfg = Config()
+    if "human_factor" in raw or any("human_factor" in p for p in raw.get("projects", [])):
+        cfg.warnings.append("human_factor is no longer used")
     for key in ("tick", "sleep_minutes", "chunk_minutes", "bridge_minutes", "merge_gap",
                 "rounding_minutes", "default_project", "git_author"):
         if key in raw:
@@ -193,7 +198,6 @@ def load(path: Path | None = None) -> Config:
             client=p.get("client", ""),
             rate=float(p.get("rate", 0)),
             currency=p.get("currency", "ZAR"),
-            human_factor=float(p.get("human_factor", 1.0)),
             paths=[Path(x).expanduser() for x in p.get("paths", [])],
             windows=[_window_rule(w) for w in windows],
             require_agent=bool(p.get("require_agent", False)),

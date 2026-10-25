@@ -84,7 +84,8 @@ def seed(tmp: Path) -> dict:
     (tmp / "config.toml").write_text(f"""
 tick = 5
 sleep_minutes = 5
-rounding_minutes = 6
+rounding_minutes = 0
+bridge_minutes = 0
 default_project = "acme"
 git_author = "jane@example.com"
 [invoice]
@@ -214,6 +215,7 @@ def widget(status: dict) -> None:
                     f'font-size="{size}" font-weight="{weight}" xml:space="preserve">{escape(glyphs(text))}</text>')
 
     s = status
+    line("Human time", 12, 0.6)
     line(f"Today {s['today']['hm']}", 26, weight=600)
     line(f"Week {s['week']['hm']}   ·   Month {s['month']['hm']}", opacity=0.8)
     e = s["earnings"]
@@ -221,7 +223,7 @@ def widget(status: dict) -> None:
         line(f"Earned this month  {e['month_text']}" + (f"   (+{e['today_text']} today)" if e["today_text"] else ""))
     for p in s["today"]["projects"]:
         line(f"  {p['name']}   {p['hm']}")
-    line("Today by hour · minutes worked", 12, 0.6)
+    line("Human time by hour · minutes worked", 12, 0.6)
     axis, ph = 26, 72                       # hour chart: 24 columns of 0-60 min, gridlines at 60/30/0
     top = y + 8
     cw = (W - 2 * pad - axis) / 24
@@ -323,14 +325,16 @@ def timeline() -> None:
         (100, "Entries", [("08:00", "08:15", "soft"), ("08:15", "08:30", "soft"), ("08:30", "08:45", "soft"),
                           ("08:45", "09:00", "soft"), ("09:03", "09:25", "soft", "chrome"),
                           ("10:00", "10:40", "soft", "meeting"), ("11:10", "11:25", "soft"),
-                          ("11:25", "11:40", "soft"), ("11:40", "11:55", "soft")]),
-        (160, "Sessions", [("08:00", "09:25", "acc"), ("10:00", "10:40", "acc"), ("11:10", "11:55", "acc")]),
+                          ("11:25", "11:40", "soft"), ("11:40", "11:55", "soft"), ("11:55", "12:00", "soft")]),
+        (160, "Sessions", [("08:00", "09:00", "acc"), ("09:03", "09:25", "acc"),
+                           ("10:00", "10:40", "acc"), ("11:10", "12:00", "acc")]),
     ]
     parts = []
     for y, label, segs in rows:
         parts.append(f'<text x="20" y="{y + 18}" class="fg" font-weight="600">{label}</text>')
         parts += [seg(y, *s) for s in segs]
-    for a, b, t in (("08:00", "09:25", "1h25"), ("10:00", "10:40", "0h40"), ("11:10", "11:55", "0h45")):
+    for a, b, t in (("08:00", "09:00", "1h00"), ("09:03", "09:25", "0h22"),
+                    ("10:00", "10:40", "0h40"), ("11:10", "12:00", "0h50")):
         parts.append(f'<text x="{(X(a) + X(b)) / 2:.1f}" y="178" fill="#ffffff" font-size="12.5" font-weight="600" '
                      f'text-anchor="middle">{t}</text>')
     for h in range(8, 13):
@@ -339,16 +343,17 @@ def timeline() -> None:
                      f'<text x="{x:.1f}" y="214" class="mute" font-size="12" text-anchor="middle">{h:02d}:00</text>')
     for x, y, n in ((X("09:01"), 34, "①"), (X("09:27"), 94, "②"), (X("10:20"), 34, "③"), (X("10:55"), 34, "④")):
         parts.append(f'<text x="{x:.1f}" y="{y}" class="acc" font-size="13" text-anchor="middle">{n}</text>')
-    notes = ["① A 3-minute switch to Chrome is shorter than sleep_minutes: still one session.",
+    notes = ["① A 3-minute gap before Chrome contributes no human time; bridging defaults to zero.",
              "② After 5 minutes without input (09:30) the entry is cut back to your last keypress at 09:25.",
              "③ A call counts without typing, because the Acme window has the microphone open.",
              "④ Windows and folders that match no project, like personal Slack, are never tracked.",
-             "Entries are cut into 15-minute pieces so a crash loses nothing; reports only use sessions.",
-             "Morning total 2h50 → rounded up to rounding_minutes (6) → 2.9 h × your rate on the invoice."]
+             "Entries are cut into 15-minute pieces; human hours sum covered intervals, never gaps.",
+             "Morning human time 2h52. No time rounding by default; invoice-only adjustments are optional."]
     for i, n in enumerate(notes):
         strong = i == len(notes) - 1
+        weight = ' font-weight="600"' if strong else ""
         parts.append(f'<text x="20" y="{246 + i * 21}" class="{"fg" if strong else "mute"}" font-size="13"'
-                     f'{" font-weight=\"600\"" if strong else ""}>{escape(n)}</text>')
+                     f'{weight}>{escape(n)}</text>')
     H = 246 + len(notes) * 21 + 6
     write("timeline.svg", f"""<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="{SANS}" font-size="14" role="img" aria-label="Timeline of one morning: your activity, the entries uurtjie writes, and the sessions it bills">
 {THEME}

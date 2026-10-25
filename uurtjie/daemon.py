@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as config_mod
-from . import db, gitinfo
+from . import db, gitinfo, invoice, storage
 from .config import RUNTIME_DIR, Config
 
 log = logging.getLogger("uurtjie")
@@ -247,11 +247,27 @@ def terminal_kind(win_pid: int | None) -> tuple[str, str | None]:
     if not win_pid:
         return "plain", None
     desc = descendants(win_pid)
-    if any(name == "herdr" for _, name, _ in desc):
+    foreground = []
+    terminals = set()
+    for pid, name, _ in desc:
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_text()
+            fields = raw[raw.rindex(")") + 2:].split()
+            group, tty, active_group = int(fields[2]), int(fields[4]), int(fields[5])
+        except (OSError, ValueError, IndexError):
+            continue
+        if tty and active_group > 0:
+            terminals.add(tty)
+            if group == active_group:
+                foreground.append((pid, name))
+    # Server-mode terminal emulators can own several PTYs. A PID alone cannot identify
+    # the focused one; omit it rather than assigning an unrelated shell's project.
+    if len(terminals) != 1:
+        return "plain", None
+    if any(name == "herdr" for _, name in foreground):
         return "herdr", None
-    leaves = [p for p, _, leaf in desc if leaf]
-    target = max(leaves) if leaves else win_pid  # newest leaf ~ foreground process
-    return "plain", proc_cwd(target)
+    cwds = {cwd for pid, _ in foreground if (cwd := proc_cwd(pid))}
+    return "plain", next(iter(cwds)) if len(cwds) == 1 else None
 
 
 # --------------------------------------------------------------------------- daemon
@@ -265,9 +281,28 @@ class Daemon:
         self.meeting_current: dict | None = None   # same shape, for the call entry (ignores idle)
         self.meeting_seen: dict | None = None      # {"key", "ctx", "since", "last_seen", "confirmed"}
         self.last_ctx: Context | None = None
+        self._idle_proc = None
+        self._idle_generation = 0
+        self._warned = set()
+        self.warn_config()
+
+    def warn_config(self):
+        for warning in self.cfg.warnings:
+            if warning not in self._warned:
+                log.warning(warning)
+                self._warned.add(warning)
 
     def reload(self):
-        self.cfg = config_mod.load()
+        cfg = config_mod.load()
+        if cfg.idle_timeout != self.cfg.idle_timeout:
+            self._idle_generation += 1
+            if self._idle_proc and self._idle_proc.returncode is None:
+                try:
+                    self._idle_proc.terminate()
+                except ProcessLookupError:
+                    pass
+        self.cfg = cfg
+        self.warn_config()
         if self.audio is None and self.cfg.meeting_detect:
             self.audio = AudioProbe()
         self.herdr = Herdr(self.cfg.herdr_socket)
@@ -312,7 +347,7 @@ class Daemon:
 
         # 3. plain terminal: cwd of its foreground process
         p = cfg.project_for_path(cwd)
-        if p:
+        if p and not p.require_agent:  # agent identity is available only through Herdr
             return Context(p.id, "terminal", f"term:{cwd}", {"cwd": cwd, "workspace_label": Path(cwd).name})
         return None
 
@@ -337,12 +372,17 @@ class Daemon:
                 merged[many] = seen[-12:]
         c["detail"] = merged
 
-    def on_idle(self, now: int):
+    def on_idle(self, now: int, timeout: int | None = None):
         self.idle = True
-        if self.current:
-            # swayidle fires idle_timeout seconds after the last input: give that time back
-            db.truncate_span(self.con, self.current["id"], now - self.cfg.idle_timeout)
-            self.current = None
+        cutoff = now - (self.cfg.idle_timeout if timeout is None else timeout)
+        with db.transaction(self.con):
+            rows = self.con.execute(
+                "SELECT * FROM spans WHERE source IN ('terminal','chrome','window') "
+                "AND end_ts > ? AND start_ts <= ?", (cutoff, now)).fetchall()
+            for row in rows:
+                if not invoice.locked_by(self.con, row["project"], max(cutoff, row["start_ts"]), row["end_ts"]):
+                    db.truncate_span(self.con, row["id"], cutoff)
+        self.current = None
         self.write_state(now, None)
         log.info("idle")
 
@@ -363,7 +403,7 @@ class Daemon:
                 ctx = await self.resolve(win)
 
         if ctx is None:
-            self.current = None
+            self._close_slot("current", now)
         else:
             self.enrich(ctx)
             self._record("current", ctx, now)
@@ -372,10 +412,35 @@ class Daemon:
         self.write_state(now, ctx)
 
     def _record(self, slot: str, ctx: Context, now: int, gap: int | None = None, start: int | None = None):
+        with db.transaction(self.con):
+            self._record_locked(slot, ctx, now, gap, start)
+
+    def _span_matches(self, current: dict) -> bool:
+        row = self.con.execute("SELECT * FROM spans WHERE id=?", (current["id"],)).fetchone()
+        return bool(row and (row["project"], row["source"], row["ctx_key"]) == current["key"]
+                    and row["start_ts"] == current["start"] and row["end_ts"] == current["last"]
+                    and row["billable"] and row["note"] is None
+                    and json.loads(row["detail"] or "{}") == current["detail"])
+
+    def _close_slot(self, slot: str, now: int):
+        current = getattr(self, slot)
+        if current is None:
+            return
+        with db.transaction(self.con):
+            if self._span_matches(current) and 0 <= now - current["last"] <= self.cfg.merge_gap:
+                db.extend_span(self.con, current["id"], now)
+            setattr(self, slot, None)
+
+    def _record_locked(self, slot: str, ctx: Context, now: int, gap: int | None, start: int | None):
         """Extend the open entry in `slot` if it is the same task, else open a new one (and chunk long ones)."""
         gap = self.cfg.merge_gap if gap is None else gap
         key = (ctx.project, ctx.source, ctx.key)
         c = getattr(self, slot)
+        if c and not self._span_matches(c):
+            c = None
+            start = None          # do not restore time that the user removed or edited
+        if c and c["key"] != key and 0 <= now - c["last"] <= gap:
+            db.extend_span(self.con, c["id"], now)
         if c and c["key"] == key and now - c["last"] <= gap:
             self.merge_detail(c, ctx.detail)
             db.extend_span(self.con, c["id"], now, c["detail"])
@@ -414,9 +479,8 @@ class Daemon:
                       for w in wins]
             if all(p is None for _, p in mapped):
                 continue
-            if any(p is None for _, p in mapped):
-                # one process owns both project and unrelated windows (your everyday Chrome):
-                # only credit the call when the focused window is the project's
+            if len({p.id if p else None for _, p in mapped}) > 1:
+                # Shared browser process: only credit the focused configured window.
                 if focus is None:
                     focus = await self.hypr.active_window() or {}
                 mapped = [(w, p) for w, p in mapped if p and w.get("address") == focus.get("address")]
@@ -431,6 +495,7 @@ class Daemon:
     async def meeting_tick(self, now: int):
         """Calls count while the mic is open, even with no keyboard or mouse input (idle doesn't apply)."""
         if not (self.audio and self.cfg.meeting_detect):
+            self._close_slot("meeting_current", now)
             self.meeting_seen = self.meeting_current = None
             return
         try:
@@ -440,21 +505,30 @@ class Daemon:
             ctx = None
         m, cfg = self.meeting_seen, self.cfg
         if ctx is None:
-            if m and now - m["last_seen"] > cfg.meeting_grace_seconds:
+            self._close_slot("meeting_current", now)
+            if m:
+                m["absent"] = True
+            if m and (not m["confirmed"] or now - m["last_seen"] > cfg.meeting_grace_seconds):
                 log.info("call ended (%s)", m["ctx"].project)
                 self.meeting_seen = self.meeting_current = None
             return
         key = (ctx.project, ctx.key)
-        if m is None or m["key"] != key:
+        if (m is None or m["key"] != key
+                or (m.get("absent") and now - m["last_seen"] > cfg.meeting_grace_seconds)):
+            self._close_slot("meeting_current", now)
             m = self.meeting_seen = {"key": key, "ctx": ctx, "since": now, "last_seen": now, "confirmed": False}
         m["ctx"], m["last_seen"] = ctx, now
+        m["absent"] = False
+        newly_confirmed = False
         if not m["confirmed"] and now - m["since"] >= cfg.meeting_min_seconds:
             m["confirmed"] = True
+            newly_confirmed = True
             log.info("call started: %s via %s", ctx.project, ctx.detail.get("app"))
         if m["confirmed"]:
-            # first entry is back-dated to when the mic opened, so the opening seconds count too
+            # Only initial confirmation is backdated. Mute grace retains call identity,
+            # but no new evidence is recorded while the microphone is absent.
             self._record("meeting_current", ctx, now, gap=max(cfg.merge_gap, cfg.meeting_grace_seconds),
-                         start=m["since"] if self.meeting_current is None else None)
+                         start=m["since"] if newly_confirmed else None)
 
     def meeting_info(self, now: int) -> dict | None:
         m = self.meeting_seen
@@ -464,16 +538,14 @@ class Daemon:
                 "since": m["since"]}
 
     def write_state(self, now: int, ctx: Context | None):
-        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        storage.runtime_dir(RUNTIME_DIR)
         state = {
             "ts": now, "pid": os.getpid(), "idle": self.idle, "tick": self.cfg.tick,
             "active": None if ctx is None else
             {"project": ctx.project, "source": ctx.source, "key": ctx.key, "detail": ctx.detail},
             "meeting": self.meeting_info(now),
         }
-        tmp = RUNTIME_DIR / "state.json.tmp"
-        tmp.write_text(json.dumps(state))
-        tmp.replace(RUNTIME_DIR / "state.json")
+        storage.atomic_write(RUNTIME_DIR / "state.json", json.dumps(state))
 
     async def idle_watch(self):
         exe = shutil.which("swayidle")
@@ -481,17 +553,34 @@ class Daemon:
             log.warning("swayidle not installed — idle detection disabled (pacman -S swayidle)")
             return
         while True:
+            timeout = self.cfg.idle_timeout
+            generation = self._idle_generation
             proc = await asyncio.create_subprocess_exec(
-                exe, "-w", "timeout", str(self.cfg.idle_timeout), "echo idle", "resume", "echo active",
+                exe, "-w", "timeout", str(timeout), "echo idle", "resume", "echo active",
                 stdout=asyncio.subprocess.PIPE)
-            assert proc.stdout
-            async for raw in proc.stdout:
-                line = raw.decode().strip()
-                if line == "idle":
-                    self.on_idle(int(time.time()))
-                elif line == "active":
-                    self.on_active()
-            await proc.wait()
+            self._idle_proc = proc
+            try:
+                if generation != self._idle_generation:
+                    continue
+                assert proc.stdout
+                async for raw in proc.stdout:
+                    if generation != self._idle_generation:
+                        continue
+                    line = raw.decode().strip()
+                    if line == "idle":
+                        self.on_idle(int(time.time()), timeout)
+                    elif line == "active":
+                        self.on_active()
+            finally:
+                if proc.returncode is None:
+                    try:
+                        proc.terminate()
+                    except ProcessLookupError:
+                        pass
+                await proc.wait()
+                self._idle_proc = None
+            if generation != self._idle_generation:
+                continue
             log.warning("swayidle exited (%s); restarting", proc.returncode)
             self.idle = False
             await asyncio.sleep(5)
