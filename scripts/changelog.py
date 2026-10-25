@@ -135,27 +135,17 @@ class Section:
 def parse_changelog(text: str) -> tuple[str, list[Section]]:
     """-> (preamble, sections in file order)."""
     lines = text.splitlines()
-    preamble: list[str] = []
-    sections: list[Section] = []
-    cur: Section | None = None
-    buf: list[str] = []
+    heads = []                                   # (1-based line, heading match)
     for i, line in enumerate(lines, 1):
-        m = HEADING_RE.match(line) if line.startswith("## [") else None
-        if line.startswith("## [") and not m:
-            raise ReleaseError(f"{CHANGELOG}:{i}: malformed heading {line!r}, expected '## [X.Y.Z] - YYYY-MM-DD'")
-        if m:
-            if cur:
-                cur.body = "\n".join(buf).strip("\n")
-                sections.append(cur)
-            cur, buf = Section(m["version"], m["date"], "", i), []
-        elif cur:
-            buf.append(line)
-        else:
-            preamble.append(line)
-    if cur:
-        cur.body = "\n".join(buf).strip("\n")
-        sections.append(cur)
-    return "\n".join(preamble), sections
+        if line.startswith("## ["):
+            m = HEADING_RE.match(line)
+            if not m:
+                raise ReleaseError(f"{CHANGELOG}:{i}: malformed heading {line!r}, expected '## [X.Y.Z] - YYYY-MM-DD'")
+            heads.append((i, m))
+    ends = [i - 1 for i, _ in heads[1:]] + [None]   # each body runs up to the next heading
+    sections = [Section(m["version"], m["date"], "\n".join(lines[i:end]).strip("\n"), i)
+                for (i, m), end in zip(heads, ends)]
+    return "\n".join(lines[:heads[0][0] - 1] if heads else lines), sections
 
 
 def parse_date(s: str) -> date:
