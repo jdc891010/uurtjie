@@ -31,7 +31,7 @@ SCHEMA: dict[str, dict[str, str]] = {
     "invoice": {"vat_rate": "float", "payment_terms_days": "int", "number_format": "str", "dir": "str"},
     "invoice.from": {"name": "str", "email": "str", "phone": "str", "vat_number": "str", "reg_number": "str",
                      "footer": "str", "address": "list", "bank": "list"},
-    "project": {"name": "str", "client": "str", "rate": "float", "currency": "str", "human_factor": "float",
+    "project": {"name": "str", "client": "str", "rate": "float", "currency": "str",
                 "client_address": "list", "client_vat_number": "str", "client_reference": "str",
                 "require_agent": "bool"},
 }
@@ -45,6 +45,8 @@ def valid_keys() -> list[str]:
 
 def resolve(key: str) -> tuple[str, str, str]:
     """'invoice.from.bank' -> ('invoice.from', 'bank', 'list'); 'rate' -> ('project', 'rate', 'float')."""
+    if key.rsplit(".", 1)[-1] == "human_factor":
+        raise ConfigError("human_factor is no longer used; remove it from your config")
     for prefix, table in (("invoice.from.", "invoice.from"), ("invoice.", "invoice")):
         if key.startswith(prefix):
             name = key[len(prefix):]

@@ -96,7 +96,7 @@ def daily_totals(con, start: int, end: int, project: str | None = None,
 
 def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> dict[str, float]:
     """Billable money in [start, end) per currency, worked out the way invoices do it: per project and
-    day, session hours x human_factor rounded up to rounding_minutes, hours x rate. Includes a running timer."""
+    day, session hours rounded up to rounding_minutes, hours x rate. Includes a running timer."""
     now = now or int(datetime.now().timestamp())
     per_day: dict = defaultdict(int)
     for s in sessions_between(con, cfg, start, end, billable_only=True, now=now):
@@ -105,7 +105,7 @@ def earned(con, cfg: Config, start: int, end: int, now: int | None = None) -> di
     for (pid, _day), secs in per_day.items():
         p = cfg.project(pid)
         if p and p.rate > 0:
-            _, amount = money.bill_day(secs, p.human_factor, cfg.rounding_minutes, p.rate)
+            _, amount = money.bill_day(secs, cfg.rounding_minutes, p.rate)
             out[p.currency] += money.decimal(amount)
     return {cur: money.cents(v) for cur, v in out.items() if v}
 
@@ -159,7 +159,6 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
     from . import sessions as S
     proj = cfg.project(project_id)
     rate = proj.rate if proj else 0.0
-    factor = proj.human_factor if proj else 1.0
     start, end = local_midnight(d_from), local_midnight(d_to + timedelta(days=1))
     sess = [s for s in sessions_between(con, cfg, start, end, billable_only=True, with_commits=with_git)
             if s["project"] == project_id and s["date"] not in (excluded_days or ())]
@@ -172,7 +171,7 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
     for d in sorted(by_day):
         ss = by_day[d]
         raw = sum(s["seconds"] for s in ss)
-        hours, amount = money.bill_day(raw, factor, cfg.rounding_minutes, rate)
+        hours, amount = money.bill_day(raw, cfg.rounding_minutes, rate)
         days.append({
             "date": d.isoformat(),
             "weekday": d.strftime("%a"),
@@ -191,7 +190,6 @@ def range_report(con, cfg: Config, d_from: date, d_to: date, project_id: str, wi
         "period": period or f"{d_from.isoformat()}..{d_to.isoformat()}",
         "rate": rate,
         "currency": proj.currency if proj else "",
-        "human_factor": factor,
         "rounding_minutes": cfg.rounding_minutes,
         "days": days,
         "total_raw_hours": round(sum(d["raw_hours"] for d in days), 2),
@@ -226,8 +224,7 @@ def render(rep: dict, fmt: str, detail: str = "day") -> str:
         f'# Timesheet — {rep["name"]} ({rep["period"]})',
         "",
         f'Client: {rep["client"] or "—"} · Rate: {cur} {rep["rate"]:,.2f}/h'
-        f' · Rounding: {rep["rounding_minutes"]} min/day'
-        + (f' · Factor: {rep["human_factor"]}' if rep["human_factor"] != 1 else ""),
+        f' · Rounding: {rep["rounding_minutes"]} min/day',
         "",
         "| Date | Day | Hours | Amount | Work |",
         "|---|---|---:|---:|---|",

@@ -264,6 +264,7 @@ def build_status(cfg, con) -> dict:
         tip.append(f"Invoices: {owed['text']}")
     if not (st and st["running"]):
         tip.append("uurtjie is not running")
+    tip += [f"Warning: {warning}" for warning in cfg.warnings]
 
     return {
         "running": bool(st and st["running"]), "idle": bool(st and st.get("idle")), "class": cls,
@@ -280,6 +281,7 @@ def build_status(cfg, con) -> dict:
         "meeting": meeting,
         "invoices": owed,
         "earnings": earnings,
+        "warnings": cfg.warnings,
     }
 
 
@@ -751,6 +753,8 @@ def cmd_invoice(args, cfg, con):
 
 
 def cmd_projects(args, cfg, con):
+    for warning in cfg.warnings:
+        print(f"Warning: {warning}")
     for p in cfg.projects:
         star = "*" if p.id == cfg.default_project else " "
         print(f"{star} {p.id:<16} {p.name}  ({p.currency} {p.rate:g}/h)")
@@ -813,7 +817,6 @@ def _show_config(cfg, path):
         print(f"  client              {val(p.client)}")
         print(f"  rate                {p.currency} {p.rate:,.2f} / hour" if p.rate else "  rate                (not set)")
         print(f"  currency            {p.currency}")
-        print(f"  human_factor        {p.human_factor:g}")
         print(f"  client_address      {lines(p.client_address)}")
         print(f"  client_vat_number   {val(p.client_vat_number)}")
         print(f"  client_reference    {val(p.client_reference)}\n")

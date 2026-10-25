@@ -283,6 +283,14 @@ class Daemon:
         self.last_ctx: Context | None = None
         self._idle_proc = None
         self._idle_generation = 0
+        self._warned = set()
+        self.warn_config()
+
+    def warn_config(self):
+        for warning in self.cfg.warnings:
+            if warning not in self._warned:
+                log.warning(warning)
+                self._warned.add(warning)
 
     def reload(self):
         cfg = config_mod.load()
@@ -294,6 +302,7 @@ class Daemon:
                 except ProcessLookupError:
                     pass
         self.cfg = cfg
+        self.warn_config()
         if self.audio is None and self.cfg.meeting_detect:
             self.audio = AudioProbe()
         self.herdr = Herdr(self.cfg.herdr_socket)

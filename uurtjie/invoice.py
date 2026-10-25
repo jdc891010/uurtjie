@@ -200,7 +200,7 @@ def create(con, cfg: Config, project_id: str, d_from: date, d_to: date, *, today
         "seller": iv.seller,
         "client": {"name": proj.client or proj.name, "address": proj.client_address,
                    "vat_number": proj.client_vat_number, "reference": proj.client_reference},
-        "currency": proj.currency, "rate": proj.rate, "human_factor": rep["human_factor"],
+        "currency": proj.currency, "rate": proj.rate,
         "rounding_minutes": rep["rounding_minutes"], "hours": rep["total_hours"],
         "subtotal": subtotal, "vat_rate": vat, "vat_amount": vat_amount, "total": total,
         "days": rep["days"],
@@ -401,7 +401,7 @@ def render_html(snap: dict, detail: str = "days") -> str:
 
     desc = f'{e(snap["project"]["name"])} — {e(_period_label(snap))}'
     item = (f'<tr><td>{desc}<div class="muted">Hours as tracked, rounded up to {snap["rounding_minutes"]} min per day'
-            f'{"; factor " + str(snap["human_factor"]) if snap["human_factor"] != 1 else ""}</div></td>'
+            f'{"; factor " + str(snap["human_factor"]) if snap.get("human_factor", 1) != 1 else ""}</div></td>'
             f'<td class="num">{fmt_hours(snap["hours"])}</td><td class="num">{e(fmt_money(cur, snap["rate"]))}</td>'
             f'<td class="num">{e(fmt_money(cur, snap["subtotal"]))}</td></tr>')
 

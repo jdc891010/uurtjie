@@ -44,7 +44,6 @@ class Project:
     client: str = ""
     rate: float = 0.0
     currency: str = "ZAR"
-    human_factor: float = 1.0
     paths: list[Path] = field(default_factory=list)
     windows: list[WindowRule] = field(default_factory=list)
     require_agent: bool = False          # only count terminal time when an agent runs in the pane
@@ -90,6 +89,7 @@ class Config:
     herdr_socket: Path = Path("~/.config/herdr/herdr.sock").expanduser()
     default_project: str | None = None
     projects: list[Project] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     # Calls: a microphone capture stream open this long counts as a meeting, even with no keyboard input.
     show_money_in_bar: bool = True        # month-to-date earnings next to the hours in the bar widget
     meeting_detect: bool = True
@@ -152,6 +152,8 @@ def load(path: Path | None = None) -> Config:
         return Config()
     raw = tomllib.loads(path.read_text())
     cfg = Config()
+    if "human_factor" in raw or any("human_factor" in p for p in raw.get("projects", [])):
+        cfg.warnings.append("human_factor is no longer used")
     for key in ("tick", "sleep_minutes", "chunk_minutes", "bridge_minutes", "merge_gap",
                 "rounding_minutes", "default_project", "git_author"):
         if key in raw:
@@ -196,7 +198,6 @@ def load(path: Path | None = None) -> Config:
             client=p.get("client", ""),
             rate=float(p.get("rate", 0)),
             currency=p.get("currency", "ZAR"),
-            human_factor=float(p.get("human_factor", 1.0)),
             paths=[Path(x).expanduser() for x in p.get("paths", [])],
             windows=[_window_rule(w) for w in windows],
             require_agent=bool(p.get("require_agent", False)),

@@ -13,8 +13,8 @@ def cents(value) -> float:
     return float(decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def bill_day(seconds: int, factor: float, rounding_minutes: int, rate: float) -> tuple[float, float]:
-    billed = decimal(seconds) * decimal(factor)
+def bill_day(seconds: int, rounding_minutes: int, rate: float) -> tuple[float, float]:
+    billed = decimal(seconds)
     if rounding_minutes > 0:
         step = decimal(rounding_minutes) * 60
         billed = (billed / step).to_integral_value(rounding=ROUND_CEILING) * step
