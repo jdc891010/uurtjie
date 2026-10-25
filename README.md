@@ -1,8 +1,15 @@
-# uurtjie
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-wordmark-dark.svg">
+    <img src="docs/images/logo-wordmark.svg" alt="uurtjie, the little hour" width="420">
+  </picture>
+</h1>
 
-[![ci](https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml/badge.svg)](https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/jdc891010/uurtjie)](https://github.com/jdc891010/uurtjie/releases/latest)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<p align="center">
+  <a href="https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml"><img src="https://github.com/jdc891010/uurtjie/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/jdc891010/uurtjie/releases/latest"><img src="https://img.shields.io/github/v/release/jdc891010/uurtjie" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license: MIT"></a>
+</p>
 
 **Client time tracking for Hyprland / Omarchy that only counts the time you are actually working on a client.**
 That means time at the keyboard in the client's project folders (terminals, Herdr, Claude Code, Codex), in the
@@ -13,7 +20,7 @@ and turns the month into a timesheet and an invoice.
 
 <p align="center"><img src="docs/images/widget.svg" alt="The uurtjie bar item showing today's hours, the tracked project and this month's earnings, and the panel below it with today, week and month totals, earnings, time per project, an hour-by-hour chart, what is being tracked now, and buttons" width="540"></p>
 
-<sub>All images in this README are generated from the real code with made-up demo data (`scripts/screenshots.py`).
+<sub>All screenshots in this README are generated from the real code with made-up demo data (`scripts/screenshots.py`).
 The bar and panel use Omarchy's theme colours; the icons are Nerd Font glyphs.</sub>
 
 ## Contents

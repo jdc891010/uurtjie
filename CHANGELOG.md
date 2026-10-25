@@ -5,6 +5,9 @@ The version must match `uurtjie/__init__.py`, the widget manifest, and the panel
 
 ## [0.5.0] - 2026-10-25
 
+### Added
+- A project logo: a clock face with only the first hour lit. SVG mark and wordmarks (light and dark) plus PNGs in `docs/images/`.
+
 ### Removed
 - `human_factor` no longer changes time or money. Old config values are ignored with a warning; already-issued invoices retain their frozen figures and original factor notes.
 

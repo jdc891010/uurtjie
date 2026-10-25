@@ -4,6 +4,8 @@
   places. All images use made-up demo data (scripts/screenshots.py).
 -->
 
+<p align="center"><img src="../images/logo.svg" alt="The uurtjie logo: a clock face with only the first hour lit" width="96"></p>
+
 <h1 align="center">The little hour</h1>
 
 <p align="center"><em>Stop tracking your time. Let it track itself, and spend your attention on the work.</em></p>
