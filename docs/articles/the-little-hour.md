@@ -73,9 +73,9 @@ You check Slack. uurtjie turns that mess into clean, defensible blocks of work:
 
 <p align="center"><img src="../images/timeline.svg" alt="Timeline of a morning: terminal work, an uncounted gap before Jira, 35 minutes away, a call without typing, personal Slack, then more terminal work, and four strict human-time sessions" width="860"></p>
 
-Switching directly between your code and the client's ticket uses a shared sample boundary. Actual gaps stay gaps.
-A call while you're also typing is counted once. Thirty-five minutes away from the desk is simply not there.
-Each session lists what you worked on: the branch, the page titles, the commits you made during it.
+Jumping straight from your code to the client's ticket loses no time, and adds none either. A few minutes spent
+somewhere else stay out. A call while you're also typing is counted once. Thirty-five minutes away from the desk is
+simply not there. Each session lists what you worked on: the branch, the page titles, the commits you made during it.
 
 ## Glance, don't manage
 
@@ -104,10 +104,11 @@ Billing by the hour is a matter of trust. uurtjie is built to keep that trust ea
 | **Rounding** | Whatever felt fair that day | None by default; optional on invoices only |
 | **After the invoice is sent** | Hours can quietly drift | The period is locked |
 
-The bar shows strict human time: each second belongs to one client. Manual time takes priority over a call, and a
-call takes priority over the focused window. Gaps without evidence do not count. Earnings use exact billable time
-and your rate. With the default zero rounding and zero gap billing, those earnings match the invoice subtotal.
-If you choose invoice rounding or gap billing, the widget explains why the invoice may differ.
+The bar counts your time the strict way: every second goes to one client, never two. If a timer is running, it wins.
+Otherwise a call wins over whatever window is in front. Time nobody can account for doesn't count at all.
+
+Your earnings are simply that time multiplied by your rate, so out of the box the number in your bar is the number
+on your invoice. If you'd rather round invoices up, you can, and the panel tells you why the two differ.
 
 ## Month-end in one command
 
