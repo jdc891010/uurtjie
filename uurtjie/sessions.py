@@ -1,7 +1,8 @@
 """Resolve evidence ownership, then group strict human intervals into work sessions.
 
-Manual time takes precedence over meetings, then focused windows. Short sampling gaps
-can group sessions without adding time. Configured gap billing is invoice-only.
+Manual time takes precedence over meetings, then focused windows. A gap with no sample in it
+(a switch recorded by an older daemon) is continuous work; any longer gap is not. Configured
+gap billing is invoice-only.
 """
 from __future__ import annotations
 
@@ -34,8 +35,26 @@ def _overlaps(intervals: list[tuple[int, int]], s: int, e: int) -> bool:
     return any(a < e and b > s for a, b in intervals)
 
 
-def evidence_segments(rows: list[dict], clip: tuple[int, int] | None = None) -> list[dict]:
-    """Disjoint evidence intervals. Ties use earliest start, then project and entry ID."""
+def sample_gap(cfg: Config) -> int:
+    """Longest gap with no sample in it. Older daemons left one sample period between entries on a switch;
+    nothing was seen elsewhere, so that time is continuous work. A gap that held a sample is not."""
+    return max(0, 2 * cfg.tick - 1)
+
+
+def _fill_sample_holes(segments: list[dict], gap: int) -> list[dict]:
+    out = []
+    for cur, nxt in zip(segments, segments[1:] + [None]):
+        out.append(cur)
+        if nxt and nxt["project"] == cur["project"] and 0 < nxt["start"] - cur["end"] <= gap:
+            lo, hi = cur["end"], nxt["start"]
+            out.append({**cur, "start": lo, "end": hi, "billable": cur["billable"] and nxt["billable"],
+                        "rows": [{**r, "start_ts": lo, "end_ts": hi} for r in cur["rows"]]})
+    return out
+
+
+def evidence_segments(rows: list[dict], clip: tuple[int, int] | None = None, gap: int = 0) -> list[dict]:
+    """Disjoint evidence intervals. Ties use earliest start, then project and entry ID. Holes of at most
+    `gap` seconds between two pieces of the same project are filled (see sample_gap)."""
     priority = {"manual": 3, "meeting": 2, "terminal": 1, "chrome": 1, "window": 1}
     events = defaultdict(list)
     ranks = {}
@@ -65,7 +84,7 @@ def evidence_segments(rows: list[dict], clip: tuple[int, int] | None = None) -> 
                         for i, r in active.items() if r["project"] == project]
         segments.append({"project": project, "start": start, "end": end, "rows": contributing,
                          "billable": all(r.get("billable", 1) for r in contributing)})
-    return segments
+    return _fill_sample_holes(segments, gap)
 
 
 def _append_interval(intervals: list, start: int, end: int):
@@ -79,12 +98,12 @@ def build_sessions(rows: list[dict], cfg: Config, clip: tuple[int, int] | None =
                    billable_only: bool = False, invoice: bool = False) -> list[dict]:
     """Group resolved evidence; only invoice billing intervals may include configured gaps."""
     pieces = defaultdict(list)
-    for segment in evidence_segments(rows, clip):
+    for segment in evidence_segments(rows, clip, sample_gap(cfg)):
         for day, start, end in split_by_day(segment["start"], segment["end"]):
             pieces[day].append({**segment, "start": start, "end": end,
                                 "rows": [{**r, "start_ts": start, "end_ts": end} for r in segment["rows"]]})
     bridge = cfg.bridge_seconds if invoice else 0
-    tolerance = max(0, cfg.tick, bridge)
+    tolerance = max(sample_gap(cfg), bridge)
     sessions = []
     for day, segments in sorted(pieces.items()):
         by_project = defaultdict(list)

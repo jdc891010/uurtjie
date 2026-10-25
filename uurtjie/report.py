@@ -57,8 +57,10 @@ def _virtual_timer_span(con, now: int):
 
 
 def daily_totals(con, start: int, end: int, project: str | None = None,
-                 billable_only: bool = False, include_timer: bool = True, now: int | None = None):
-    """Return {(project, date): {"seconds": int, "sources": {src: s}, "contexts": set, "notes": list}}."""
+                 billable_only: bool = False, include_timer: bool = True, now: int | None = None,
+                 gap: int = 0):
+    """Return {(project, date): {"seconds": int, "sources": {src: s}, "contexts": set, "notes": list}}.
+    Pass gap=sessions.sample_gap(cfg) to count sampling holes the way sessions do."""
     from .sessions import evidence_segments
     now = int(datetime.now().timestamp()) if now is None else now
     rows = [dict(r) for r in db.spans_between(con, start, end)]
@@ -68,7 +70,7 @@ def daily_totals(con, start: int, end: int, project: str | None = None,
             rows.append(timer)
     buckets = defaultdict(lambda: {"intervals": [], "by_source": defaultdict(list),
                                    "contexts": set(), "notes": []})
-    for segment in evidence_segments(rows, (start, end)):
+    for segment in evidence_segments(rows, (start, end), gap):
         if (project is not None and segment["project"] != project) or (billable_only and not segment["billable"]):
             continue
         for day, lo, hi in split_by_day(segment["start"], segment["end"]):

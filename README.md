@@ -93,8 +93,9 @@ The daemon writes fine-grained **entries**. Long stretches are split into `chunk
 switches close the previous entry and open the next at the same sample boundary. Entries become **sessions**:
 
 - Overlapping evidence for one project merges after cross-project ownership is resolved.
-- A gap no longer than one sample (`tick`, 5 seconds by default) may join the displayed session, but adds no seconds.
-  Session hours are the sum of covered intervals, not the elapsed time between the displayed start and end.
+- A gap with no sample in it (shorter than two `tick`s, so up to 9 seconds by default) counts as work: nothing else was
+  seen, and entries recorded before 0.5 left such a hole at every switch. A longer gap held a sample of something
+  untracked and never counts. Session hours are the sum of covered intervals, not the time between start and end.
 - `bridge_minutes` defaults to **0**. An explicit nonzero value can add gaps to invoice billing only, never the
   widget's human time or earnings. Gaps containing another project's evidence or non-billable work are not billed.
 - Each session lists its tasks, branches, page titles, notes and git commits, and has a one-line summary.

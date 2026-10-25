@@ -100,14 +100,42 @@ class HumanTimeTests(unittest.TestCase):
         self.assertEqual(sum(s["seconds"] for s in result if s["project"] == "other"), 60)
         self.assertEqual(sum(s["seconds"] for s in result), 100)
 
-    def test_sample_tolerance_groups_without_adding_seconds(self):
+    def test_sample_hole_from_an_older_daemon_counts_as_work(self):
+        # 0.4 daemons left one sample period (5-6 s at tick=5) between entries on a switch: no sample
+        # saw anything else, so the hole is human time. 9 s is the longest gap without a sample.
         self.add(0, 20)
-        self.add(25, 40)
+        self.add(25, 40, source="chrome")
+        self.add(46, 60)
+        self.add(69, 80)
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 80)
+        self.assertEqual([(s["start"] - self.start, s["seconds"]) for s in result], [(0, 80)])
+        self.assertAlmostEqual(sum(report.hourly_minutes(result, self.day)) * 60, 80)
+        daily = report.daily_totals(self.con, self.start, self.start + 80, gap=sessions.sample_gap(self.cfg))
+        self.assertEqual(daily[("acme", self.day)]["seconds"], 80)
+        # a hole goes to the source it follows
+        self.assertEqual(daily[("acme", self.day)]["sources"], {"terminal": 20 + 5 + 14 + 9 + 11, "chrome": 15 + 6})
+
+    def test_gap_that_held_a_sample_stays_out(self):
+        self.add(0, 20)
+        self.add(30, 40)                     # 10 s: one sample landed elsewhere (untracked window)
         result = report.sessions_between(self.con, self.cfg, self.start, self.start + 40)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["seconds"], 35)
-        self.assertEqual(result[0]["end"] - result[0]["start"], 40)
-        self.assertAlmostEqual(sum(report.hourly_minutes(result, self.day)) * 60, 35)
+        self.assertEqual(sum(s["seconds"] for s in result), 30)
+        self.cfg.tick = 10                   # with slower sampling the same gap held no sample
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 40)
+        self.assertEqual(sum(s["seconds"] for s in result), 40)
+
+    def test_sample_hole_is_not_given_to_either_side_of_a_project_switch(self):
+        self.add(0, 20)
+        self.add(25, 40, "other")
+        result = report.sessions_between(self.con, self.cfg, self.start, self.start + 40)
+        self.assertEqual({s["project"]: s["seconds"] for s in result}, {"acme": 20, "other": 15})
+
+    def test_sample_hole_next_to_non_billable_time_is_not_billable(self):
+        self.cfg.rounding_minutes = 0
+        self.add(0, 3600)
+        self.add(3605, 7200, billable=False)
+        rep = report.range_report(self.con, self.cfg, self.day, self.day, "acme", False)
+        self.assertEqual((rep["total_raw_seconds"], rep["days"][0]["billing_seconds"]), (7200, 3600))
 
     def test_configured_bridge_is_invoice_only_and_does_not_change_raw_time(self):
         self.cfg.bridge_minutes = 5
@@ -144,6 +172,10 @@ class HumanTimeTests(unittest.TestCase):
                     if active:
                         expected[second] = min(active, key=lambda r: (-priority[r["source"]], r["start_ts"],
                                                                      r["project"], r["id"]))["project"]
+                owned = sorted(expected)                # a hole with no sample between two pieces of one project
+                for a, b in zip(owned, owned[1:]):      # is that project's time
+                    if 1 < b - a <= sessions.sample_gap(self.cfg) + 1 and expected[a] == expected[b]:
+                        expected.update({s: expected[a] for s in range(a + 1, b)})
                 result = sessions.build_sessions(rows, self.cfg, (base, end))
                 actual = {}
                 for session in result:
@@ -155,7 +187,8 @@ class HumanTimeTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 seconds = sum(s["seconds"] for s in result)
                 self.assertLessEqual(seconds, end - base)
-                daily = report.daily_totals(self.con, base, end, include_timer=False)
+                daily = report.daily_totals(self.con, base, end, include_timer=False,
+                                            gap=sessions.sample_gap(self.cfg))
                 self.assertEqual(sum(d["seconds"] for d in daily.values()), seconds)
                 self.assertEqual(sum(sum(d["sources"].values()) for d in daily.values()), seconds)
                 hourly = sum(sum(report.hourly_minutes(result, day)) for day in [self.day, self.day + timedelta(days=1)])
@@ -191,7 +224,7 @@ class HumanTimeTests(unittest.TestCase):
     def test_zero_defaults_make_widget_earnings_equal_invoice(self):
         self.assertEqual((self.cfg.bridge_minutes, self.cfg.rounding_minutes), (0, 0))
         self.add(0, 61)
-        self.add(66, 127)
+        self.add(76, 137)                    # 15 s gap: samples landed elsewhere, so it stays out
         earned = report.earned(self.con, self.cfg, *report.month_bounds(2026, 9))
         snap = self.issue()
         self.assertEqual(earned, {"ZAR": snap["subtotal"]})
