@@ -5,9 +5,10 @@ tick = 5                 # seconds between samples
 sleep_minutes = 5        # no keyboard/mouse/scroll this long = asleep: tracking stops at your last input.
                          # Shorter pauses never stop anything.
 chunk_minutes = 15       # long sessions on one task are still written as 15-min entries (nothing lost)
-# bridge_minutes = 5     # gaps up to this inside a project count as one session (default = sleep_minutes);
-                         # never bridged across time spent on another project
-rounding_minutes = 6     # reports round each day UP to this many minutes (0 = exact)
+bridge_minutes = 0      # invoice-only gap billing (minutes); human time never fills gaps.
+                         # Other-project evidence and non-billable work block invoice bridges.
+rounding_minutes = 0    # invoice-only daily time rounding (minutes, up); 0 = exact.
+                         # The widget always uses exact covered human seconds and earnings.
 # git_author = "you@example.com"   # whose commits to attach (default: git config user.email per repo)
 
 # Backups: a verified copy of the database every day (and on `uurtjie backup`).
@@ -29,7 +30,7 @@ terminal_classes = ["foot", "Alacritty", "com.mitchellh.ghostty", "kitty", "org.
 # Calls: an open microphone capture stream counts as a meeting even without keyboard input.
 # meeting_detect = true
 # meeting_min_seconds = 30         # shorter mic use (dictation, voice search) is not a call
-# meeting_grace_seconds = 120      # mic gone this long = call over (bridges mute toggles)
+# meeting_grace_seconds = 120      # retain call identity through mute; absent capture adds no human time
 # meeting_ignore = ["voxtype", "pavucontrol", "speech-dispatcher"]   # apps whose mic use is not a call
 
 [[projects]]
@@ -38,7 +39,6 @@ name = "Acme Corp — platform build"
 client = "Acme (Pty) Ltd"
 rate = 950
 currency = "ZAR"
-human_factor = 1.0       # multiply tracked hours before rounding (e.g. 0.7)
 # Shown on invoices:
 # client_address = ["12 Sample Street", "Cape Town, 8001"]
 # client_vat_number = "4123456789"

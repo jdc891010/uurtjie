@@ -166,13 +166,14 @@ def _clean_title(t: str) -> str:
     return t.strip()[:80]
 
 
-def attach_commits(sessions: list[dict], cfg: Config):
+def attach_commits(sessions: list[dict], cfg: Config, invoice: bool = False):
     """Give each commit to the one session (same project) whose time window contains it."""
     seen: set[str] = set()
     for s in sessions:
         s["commits"] = []
         for repo in s["repos"]:
-            for c in gitinfo.commits(repo, s["start"] - 60, s["end"] + cfg.bridge_seconds, cfg.git_author):
+            for c in gitinfo.commits(repo, s["start"] - 60,
+                                     s["end"] + (cfg.bridge_seconds if invoice else 0), cfg.git_author):
                 if c["sha"] in seen:
                     continue
                 seen.add(c["sha"])

@@ -128,7 +128,7 @@ def sessions_between(con, cfg: Config, start: int, end: int, billable_only: bool
         rows.append(v)
     out = S.build_sessions(rows, cfg, clip=(start, end), billable_only=billable_only, invoice=invoice)
     if with_commits:
-        S.attach_commits(out, cfg)
+        S.attach_commits(out, cfg, invoice=invoice)
     if summaries:
         S.summarize(out, cfg, con)
     return out

@@ -269,3 +269,18 @@ class HumanTimeTests(unittest.TestCase):
         for second in range(0, 61, 5):
             asyncio.run(d.meeting_tick(self.start + second))
         self.assertEqual(sum(r[0] for r in self.con.execute("SELECT end_ts-start_ts FROM spans")), 60)
+
+    def test_invoice_bridge_does_not_change_strict_session_commit_attachment(self):
+        self.cfg.bridge_minutes = 5
+        self.add(0, 60, detail={"workspace_label": "api", "repo": "/code/acme"})
+        with patch.object(sessions.gitinfo, "commits", return_value=[]) as commits:
+            report.sessions_between(self.con, self.cfg, self.start, self.start + 100, with_commits=True)
+            self.assertEqual(commits.call_args.args[2], self.start + 60)
+            report.sessions_between(self.con, self.cfg, self.start, self.start + 100, with_commits=True, invoice=True)
+            self.assertEqual(commits.call_args.args[2], self.start + 360)
+
+    def test_demo_config_and_article_follow_release_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = config.load(root / "config.example.toml")
+        self.assertEqual((cfg.bridge_minutes, cfg.rounding_minutes, cfg.warnings), (0, 0, []))
+        self.assertNotRegex((root / "docs/articles/the-little-hour.md").read_text(), "[\u2013\u2014]")

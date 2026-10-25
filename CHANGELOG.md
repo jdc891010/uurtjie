@@ -1,7 +1,22 @@
 # Changelog
 
 Each `## [x.y.z]` section becomes the notes of that GitHub release (see README › Releasing).
-The version must match `uurtjie/__init__.py` and `omarchy-plugin/jd.uurtjie/manifest.json`.
+The version must match `uurtjie/__init__.py`, the widget manifest, and the panel's version.
+
+## [0.5.0] - 2026-10-25
+
+### Removed
+- `human_factor` no longer changes time or money. Old config values are ignored with a warning; already-issued invoices retain their frozen figures and original factor notes.
+
+### Changed
+- Human time is the union of recorded focus, meeting and manual evidence. Each overlapping second belongs to one project: manual time and timers take precedence over meetings, then focused windows.
+- Gap billing (`bridge_minutes`) and time rounding (`rounding_minutes`) now default to 0 and affect invoices only. A single-sample tolerance can group evidence without adding seconds.
+- The widget shows exact human time and earnings. Its tooltip and panel explain when configured invoice adjustments may produce different amounts.
+- **Action:** hours may drop compared with 0.4.x because gaps and cross-project overlaps no longer inflate human time. Remove `human_factor`; set `bridge_minutes` and `rounding_minutes` to 0 to adopt the exact defaults. Existing explicit invoice settings remain configured. Already-issued invoices are frozen and are not recalculated.
+
+### Fixed
+- Context switches close the previous span and open the next at one sample boundary. Microphone grace retains call identity without billing absent capture time.
+- Sessions, hourly charts, daily totals and report raw hours use the same covered intervals, including day boundaries.
 
 ## [0.4.1] - 2026-10-25
 

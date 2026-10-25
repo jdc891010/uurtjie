@@ -71,11 +71,11 @@ There's nothing to start and nothing to stop. You open the laptop and work.
 Real days are messy. You jump from the terminal to the client's ticket board and back. You step away. You take a call.
 You check Slack. uurtjie turns that mess into clean, defensible blocks of work:
 
-<p align="center"><img src="../images/timeline.svg" alt="Timeline of a morning: terminal work, a short switch to the client's Jira, 35 minutes away, a call without typing, personal Slack, then more terminal work, and the three billed sessions that come out of it" width="860"></p>
+<p align="center"><img src="../images/timeline.svg" alt="Timeline of a morning: terminal work, an uncounted gap before Jira, 35 minutes away, a call without typing, personal Slack, then more terminal work, and four strict human-time sessions" width="860"></p>
 
-A quick hop from your code to the client's ticket and back is one session, not three. A call while you're also typing
-is billed once, not twice. Thirty-five minutes away from the desk is simply not there. Each session even lists what
-you worked on: the branch, the page titles, the commits you made during it.
+Switching directly between your code and the client's ticket uses a shared sample boundary. Actual gaps stay gaps.
+A call while you're also typing is counted once. Thirty-five minutes away from the desk is simply not there.
+Each session lists what you worked on: the branch, the page titles, the commits you made during it.
 
 ## Glance, don't manage
 
@@ -101,11 +101,13 @@ Billing by the hour is a matter of trust. uurtjie is built to keep that trust ea
 | **Where hours come from** | Memory, calendar, git log | What you actually worked on |
 | **Breaks and idle time** | Easy to forget to subtract | Removed automatically |
 | **Calls while you type** | Easy to count twice | Counted once |
-| **Rounding** | Whatever felt fair that day | The same rule, once per day, everywhere |
+| **Rounding** | Whatever felt fair that day | None by default; optional on invoices only |
 | **After the invoice is sent** | Hours can quietly drift | The period is locked |
 
-The earnings in your bar are worked out exactly like the invoice, so there are no surprises between what you saw and
-what you bill.
+The bar shows strict human time: each second belongs to one client. Manual time takes priority over a call, and a
+call takes priority over the focused window. Gaps without evidence do not count. Earnings use exact billable time
+and your rate. With the default zero rounding and zero gap billing, those earnings match the invoice subtotal.
+If you choose invoice rounding or gap billing, the widget explains why the invoice may differ.
 
 ## Month-end in one command
 
