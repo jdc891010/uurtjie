@@ -224,14 +224,15 @@ def _proc_table() -> tuple[dict[int, list[int]], dict[int, str]]:
     return children, comm
 
 
-def descendants(pid: int) -> list[tuple[int, str, bool]]:
-    """(pid, comm, is_leaf) for every descendant of pid."""
+def descendants(pid: int, prune: frozenset[str] = frozenset()) -> list[tuple[int, str, bool]]:
+    """(pid, comm, is_leaf) for every descendant of pid; children of `prune`-named processes are skipped."""
     children, comm = _proc_table()
     out, stack = [], list(children.get(pid, []))
     while stack:
         p = stack.pop()
         out.append((p, comm.get(p, ""), not children.get(p)))
-        stack.extend(children.get(p, []))
+        if comm.get(p, "") not in prune:
+            stack.extend(children.get(p, []))
     return out
 
 
@@ -246,7 +247,8 @@ def terminal_kind(win_pid: int | None) -> tuple[str, str | None]:
     """('herdr', None) if a herdr client runs in this terminal, else ('plain', cwd)."""
     if not win_pid:
         return "plain", None
-    desc = descendants(win_pid)
+    # Herdr's server owns a PTY per pane; Herdr itself reports the focused one.
+    desc = descendants(win_pid, prune=frozenset({"herdr"}))
     foreground = []
     terminals = set()
     for pid, name, _ in desc:
