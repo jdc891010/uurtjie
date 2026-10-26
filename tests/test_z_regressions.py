@@ -335,6 +335,17 @@ class ReviewTests(unittest.TestCase):
                 patch.object(daemon, "proc_cwd", side_effect=lambda pid: {100: "/code/b", 200: "/code/a"}[pid]):
             self.assertEqual(daemon.terminal_kind(10), ("plain", "/code/b"))
 
+    def test_herdr_server_pane_ptys_do_not_hide_herdr_terminal(self):
+        # foot(10) -> bash(100) -> herdr client(200) -> herdr server(300) -> pane shells on other PTYs
+        children = {10: [100], 100: [200], 200: [300], 300: [400, 500]}
+        comm = {100: "bash", 200: "herdr", 300: "herdr", 400: "bash", 500: "bash"}
+        stats = {100: "100 (bash) S 10 100 100 42 200", 200: "200 (herdr) S 100 200 100 42 200",
+                 300: "300 (herdr) S 200 300 300 0 -1", 400: "400 (bash) S 300 400 400 43 400",
+                 500: "500 (bash) S 300 500 500 44 500"}
+        with patch.object(daemon, "_proc_table", return_value=(children, comm)), \
+                patch.object(Path, "read_text", lambda p: stats[int(p.parent.name)]):
+            self.assertEqual(daemon.terminal_kind(10), ("herdr", None))
+
     def test_two_configured_clients_in_shared_browser_require_focus(self):
         self.cfg.projects[0].windows = [config.WindowRule(cls="browser-a")]
         self.cfg.projects[1].windows = [config.WindowRule(cls="browser-b")]

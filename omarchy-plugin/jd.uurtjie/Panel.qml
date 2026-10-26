@@ -11,7 +11,7 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   readonly property var s: hostWidget ? hostWidget.status : ({})
-  readonly property string widgetVersion: "0.5.1"   // keep in sync with manifest.json
+  readonly property string widgetVersion: "0.5.2"   // keep in sync with manifest.json
   readonly property string family: root.bar ? root.bar.fontFamily : Style.font.family
 
   function open() { root.controller.show() }
