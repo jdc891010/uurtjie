@@ -3,6 +3,12 @@
 Each `## [x.y.z]` section becomes the notes of that GitHub release (see README › Releasing).
 The version must match `uurtjie/__init__.py`, the widget manifest, and the panel's version.
 
+## [0.5.2] - 2026-10-26
+
+### Fixed
+- Time in herdr terminals was not counted in 0.5.0 and 0.5.1. A check added in 0.5.0 ignores a terminal window whose processes use more than one terminal session, because uurtjie can't tell which one has focus. herdr's server opens a session for every pane, so every herdr window was skipped before uurtjie asked herdr which pane had focus. uurtjie no longer looks inside herdr's own processes, since herdr reports the focused pane itself. The check still applies to other terminals.
+- **Action:** herdr time between upgrading to 0.5.0 and this release was not recorded and can't be rebuilt. Add it by hand with `uurtjie add` or `uurtjie q`.
+
 ## [0.5.1] - 2026-10-25
 
 ### Fixed
